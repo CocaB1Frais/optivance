@@ -1,0 +1,63 @@
+{
+  "env": {
+    "DOTNET_CLI_TELEMETRY_OPTOUT": "1"
+  },
+  "enabledPlugins": {
+    "claude-mem@thedotmack": false,
+    "ponytail@ponytail": false
+  },
+  "permissions": {
+    "ask": [
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(git merge *)",
+      "Bash(git rebase *)",
+      "Bash(git reset *)",
+      "Bash(git checkout *)",
+      "Bash(git switch *)",
+      "Bash(git branch *)",
+      "Bash(git tag *)",
+      "Bash(dotnet *)",
+      "Bash(cargo *)",
+      "Bash(rustup *)",
+      "Bash(npx skills *)",
+      "Bash(graphify *)",
+      "PowerShell(git commit *)",
+      "PowerShell(git push *)",
+      "PowerShell(git merge *)",
+      "PowerShell(git checkout *)",
+      "PowerShell(git switch *)",
+      "PowerShell(dotnet *)",
+      "PowerShell(cargo *)",
+      "PowerShell(rustup *)",
+      "Edit(**/*.md)"
+    ],
+    "deny": [
+      "Bash(git push --force *)",
+      "Bash(reg add *)",
+      "Bash(reg delete *)",
+      "Bash(reg import *)",
+      "Bash(sc create *)",
+      "Bash(sc config *)",
+      "Bash(sc delete *)",
+      "Bash(schtasks *)",
+      "Bash(winget install *)",
+      "PowerShell(git push --force *)",
+      "PowerShell(reg add *)",
+      "PowerShell(reg delete *)",
+      "PowerShell(reg import *)",
+      "PowerShell(sc.exe create *)",
+      "PowerShell(sc.exe config *)",
+      "PowerShell(sc.exe delete *)",
+      "PowerShell(schtasks *)",
+      "PowerShell(winget install *)",
+      "PowerShell(New-Service *)",
+      "PowerShell(Set-Service *)",
+      "PowerShell(New-ItemProperty *)",
+      "PowerShell(Set-ItemProperty *)",
+      "PowerShell(Remove-ItemProperty *)",
+      "PowerShell(Add-AppxPackage *)",
+      "PowerShell(Register-ScheduledTask *)"
+    ]
+  }
+}

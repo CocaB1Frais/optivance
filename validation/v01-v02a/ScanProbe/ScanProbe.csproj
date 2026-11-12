@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\Optivance.Core\Optivance.Core.csproj" />
+    <ProjectReference Include="..\..\..\src\Optivance.Infrastructure\Optivance.Infrastructure.csproj" />
+    <None Include="..\..\..\engine\target\engine-v0-1\release\optivance-engine.exe"
+          Link="optivance-engine.exe"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="BuildOptivanceRustEngine" BeforeTargets="PrepareForBuild">
+    <Exec Command="cargo build --manifest-path &quot;$(MSBuildProjectDirectory)\..\..\..\engine\Cargo.toml&quot; --target-dir &quot;$(MSBuildProjectDirectory)\..\..\..\engine\target\engine-v0-1&quot; --release" />
+  </Target>
+</Project>

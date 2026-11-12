@@ -1,0 +1,14 @@
+# Réglages Claude Code personnels (non partagés)
+.claude/settings.local.json
+# Sorties graphify (générées, peuvent contenir des extraits de documents)
+graphify-out/
+
+# Sorties de compilation du prototype local V0.1
+**/bin/
+# Sources des binaires Rust supplémentaires (helper MFT) : ce ne sont pas des sorties.
+!engine/src/bin/
+**/obj/
+**/target/
+.vs/
+*.user
+*.suo

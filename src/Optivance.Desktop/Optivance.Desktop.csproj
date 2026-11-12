@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>OPTIVANCE</AssemblyName>
+    <RootNamespace>Optivance.Desktop</RootNamespace>
+  </PropertyGroup>
+  <!-- Moteur Rust. Cargo lit engine/.cargo/config.toml depuis son répertoire courant
+       (pas depuis manifest-path) : il doit donc être lancé depuis engine/ pour appliquer
+       la cible x86_64-pc-windows-msvc et le CRT statique (aucune dépendance VCRUNTIME140). -->
+  <PropertyGroup>
+    <OptivanceEngineDir>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\..\engine'))</OptivanceEngineDir>
+    <OptivanceCargoTargetDir>$(OptivanceEngineDir)\target\engine-v0-2</OptivanceCargoTargetDir>
+    <!-- Le triplet doit rester identique à build.target dans engine/.cargo/config.toml. -->
+    <OptivanceEngineExe>$(OptivanceCargoTargetDir)\x86_64-pc-windows-msvc\release\optivance-engine.exe</OptivanceEngineExe>
+    <!-- Helper MFT expérimental (lancé avec UAC à chaque analyse MFT, jamais au démarrage). -->
+    <OptivanceMftHelperExe>$(OptivanceCargoTargetDir)\x86_64-pc-windows-msvc\release\optivance-mft-helper.exe</OptivanceMftHelperExe>
+  </PropertyGroup>
+  <!-- cargo n'est pas forcément dans le PATH (installation rustup par défaut). Surcharge : /p:CargoExe=... -->
+  <PropertyGroup Condition="'$(CargoExe)' == ''">
+    <CargoExe Condition="'$(CARGO_HOME)' != '' and Exists('$(CARGO_HOME)\bin\cargo.exe')">$(CARGO_HOME)\bin\cargo.exe</CargoExe>
+    <CargoExe Condition="'$(CargoExe)' == '' and Exists('$(USERPROFILE)\.cargo\bin\cargo.exe')">$(USERPROFILE)\.cargo\bin\cargo.exe</CargoExe>
+    <CargoExe Condition="'$(CargoExe)' == ''">cargo</CargoExe>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Optivance.Core\Optivance.Core.csproj" />
+    <ProjectReference Include="..\Optivance.Infrastructure\Optivance.Infrastructure.csproj" />
+    <None Include="$(OptivanceEngineExe)"
+          Link="optivance-engine.exe"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
+    <None Include="$(OptivanceMftHelperExe)"
+          Link="optivance-mft-helper.exe"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="BuildOptivanceRustEngine" BeforeTargets="PrepareForBuild">
+    <Exec Command="&quot;$(CargoExe)&quot; build --release --locked --manifest-path &quot;$(OptivanceEngineDir)\Cargo.toml&quot; --target-dir &quot;$(OptivanceCargoTargetDir)&quot;"
+          WorkingDirectory="$(OptivanceEngineDir)" />
+    <Error Condition="!Exists('$(OptivanceEngineExe)')"
+           Text="Moteur Rust introuvable après cargo build : $(OptivanceEngineExe). Vérifier build.target dans engine/.cargo/config.toml." />
+    <Error Condition="!Exists('$(OptivanceMftHelperExe)')"
+           Text="Helper MFT introuvable après cargo build : $(OptivanceMftHelperExe)." />
+  </Target>
+</Project>
