@@ -83,8 +83,22 @@ pub fn open_volume(letter: char) -> io::Result<OwnedHandle> {
     open_handle(&wide(&format!("\\\\.\\{letter}:")), GENERIC_READ, 0)
 }
 
+/// Lecture exacte à une position du volume (offset et longueur alignés sur le secteur).
+pub fn read_volume_at(volume: &std::fs::File, offset: u64, buffer: &mut [u8]) -> Result<(), String> {
+    use std::os::windows::fs::FileExt;
+    let mut filled = 0;
+    while filled < buffer.len() {
+        match volume.seek_read(&mut buffer[filled..], offset + filled as u64) {
+            Ok(0) => return Err(format!("fin du volume à l'offset {}", offset + filled as u64)),
+            Ok(read) => filled += read,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(())
+}
+
 /// Un appel `FSCTL_ENUM_USN_DATA` ; renvoie les octets écrits ou le code Win32.
-pub fn fetch_mft_chunk(volume: &OwnedHandle, start: u64, buffer: &mut [u8]) -> Result<usize, i32> {
+pub fn fetch_mft_chunk(volume: &impl AsRawHandle, start: u64, buffer: &mut [u8]) -> Result<usize, i32> {
     let mut input = MftEnumDataV0 { start_file_reference_number: start, low_usn: 0, high_usn: i64::MAX };
     let mut returned = 0u32;
     let capacity = u32::try_from(buffer.len()).unwrap_or(u32::MAX);

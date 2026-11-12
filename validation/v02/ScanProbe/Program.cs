@@ -4,11 +4,17 @@ using Optivance.Infrastructure;
 
 if (args.Length is < 1 or > 3)
 {
-    Console.Error.WriteLine("Usage: ScanProbe.exe <scan-root> [--cancel-after-ms <milliseconds>]");
+    Console.Error.WriteLine("Usage: ScanProbe.exe <scan-root> [--cancel-after-ms <milliseconds>] | ScanProbe.exe --mft <lettre>");
     return 64;
 }
 
-var target = Path.GetFullPath(args[0]);
+// Mode MFT : lance le helper avec demande UAC (lecture seule), métriques uniquement.
+char? mftLetter = args.Length == 2 && args[0] == "--mft" && args[1].Length >= 1 && char.IsAsciiLetter(args[1][0]) ? args[1][0] : null;
+var target = mftLetter is { } volumeLetter ? $"{volumeLetter}:\\" : Path.GetFullPath(args[0]);
+if (mftLetter is not null)
+{
+    args = [target];
+}
 int? cancelAfterMilliseconds = null;
 if (args.Length > 1)
 {
@@ -37,8 +43,12 @@ try
     {
         cancellation.CancelAfter(delay);
     }
-    var result = await new ScanEngineClient().ScanAsync(target, progress, cancellation.Token);
+    var result = mftLetter is { } letter
+        ? await new MftScanClient().ScanVolumeAsync(letter, progress, cancellation.Token)
+        : await new ScanEngineClient().ScanAsync(target, progress, cancellation.Token);
     var summary = result.Summary;
+    Console.WriteLine($"method={summary.Method}");
+    Console.WriteLine($"partial={summary.IsPartial}");
     var engine = summary.EngineMetrics;
     var client = summary.ClientMetrics;
     var culture = CultureInfo.InvariantCulture;

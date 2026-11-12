@@ -10,6 +10,8 @@ internal static class SecurePipeServer
 {
     private const uint PipeAccessDuplex = 0x00000003;
     private const uint FileFlagOverlapped = 0x40000000;
+    /// <summary>Échoue si un autre processus a déjà créé ce nom (pas d'usurpation du canal).</summary>
+    private const uint FileFlagFirstPipeInstance = 0x00080000;
     private const uint PipeTypeByte = 0x00000000;
     private const uint PipeReadModeByte = 0x00000000;
     private const uint PipeWait = 0x00000000;
@@ -43,7 +45,7 @@ internal static class SecurePipeServer
             var fullPipeName = $@"\\.\pipe\{pipeName}";
             var handle = CreateNamedPipeW(
                 fullPipeName,
-                PipeAccessDuplex | FileFlagOverlapped,
+                PipeAccessDuplex | FileFlagOverlapped | FileFlagFirstPipeInstance,
                 PipeTypeByte | PipeReadModeByte | PipeWait | PipeRejectRemoteClients,
                 maxInstances: 1,
                 outBufferSize: BufferSize,

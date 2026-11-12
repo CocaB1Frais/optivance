@@ -72,6 +72,7 @@ pub fn assemble<E>(index: &MftIndex, mut query: impl FnMut(u128) -> Result<FileS
             unique_logical_bytes: if counted { logical } else { 0 },
             unique_allocated_bytes: if counted { allocated } else { 0 },
             hard_link_duplicate: source.hard_link_duplicate,
+            modified: 0,
         });
     }
 

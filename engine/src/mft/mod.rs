@@ -10,5 +10,6 @@ pub mod enumerate;
 pub mod index;
 pub mod links;
 pub mod metadata;
+pub mod raw;
 pub mod records;
 pub mod volume;
