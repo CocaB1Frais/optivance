@@ -56,7 +56,7 @@ public partial class App : Application
         // L'autorisation administrateur (une fois par session) est demandée AVANT toute fenêtre.
         MftSession? session = null;
         string? sessionError = null;
-        if (Settings.RequestElevationAtStartup && MftScanClient.IsHelperPresent)
+        if (Settings.RequestElevationAtStartup && !arguments.Contains("--no-elevation") && MftScanClient.IsHelperPresent)
         {
             try
             {
@@ -68,7 +68,8 @@ public partial class App : Application
             }
         }
 
-        var window = new MainWindow(session, sessionError, scanTarget);
+        var pageIndex = Array.IndexOf(arguments, "--page");
+        var window = new MainWindow(session, sessionError, scanTarget, pageIndex >= 0 && pageIndex + 1 < arguments.Length ? arguments[pageIndex + 1] : null);
         MainWindow = window;
         if (!startHidden)
         {

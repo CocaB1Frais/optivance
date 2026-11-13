@@ -8,6 +8,23 @@ if (args.Length is < 1 or > 3)
     return 64;
 }
 
+// Mode monitoring : deux relevés des capteurs (sans élévation), valeurs affichées telles quelles.
+if (args.Length == 1 && args[0] == "--monitor")
+{
+    var monitor = Optivance.Infrastructure.Monitoring.SystemMonitor.Shared;
+    var samples = new List<SystemSnapshot>();
+    using (monitor.Subscribe(samples.Add))
+    {
+        await Task.Delay(2600);
+    }
+    Console.WriteLine($"cpuName={monitor.CpuName}");
+    foreach (var property in typeof(SystemSnapshot).GetProperties())
+    {
+        Console.WriteLine($"{property.Name}={property.GetValue(samples[^1]) ?? "indisponible"}");
+    }
+    return 0;
+}
+
 // Mode MFT : lance le helper avec demande UAC (lecture seule), mÃ©triques uniquement.
 char? mftLetter = args.Length == 2 && args[0] == "--mft" && args[1].Length >= 1 && char.IsAsciiLetter(args[1][0]) ? args[1][0] : null;
 var target = mftLetter is { } volumeLetter ? $"{volumeLetter}:\\" : Path.GetFullPath(args[0]);

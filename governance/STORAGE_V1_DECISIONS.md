@@ -56,6 +56,19 @@ Le décodage côté client se fait pendant la réception (+0,1 s après le moteu
 
 **Disque E: (disque dur WD 1 To, secteurs 4 Ko, enregistrements MFT de 1 Ko).** La lecture brute du volume y est refusée par Windows (erreur 50 dès le secteur de démarrage). Correctifs : taille d'enregistrement < secteur acceptée ; tampons alignés sur 4 Ko ; repli sur `FSCTL_GET_NTFS_FILE_RECORD` (parcours descendant, un appel par enregistrement occupé, même décodage). Mesure : **E: 0,68 s** (ScanProbe, après UAC) et 0,7 s dans l'interface, état `completed` ; alloué 235,72 Go pour 236,18 Go occupés (WizTree : 1,6 s, mesure de l'utilisateur). La lecture du volume est redevenue séquentielle (un fil) : les lectures simultanées pénalisaient ce disque mécanique.
 
+## Autres modules — arbitrages du 13/11/2026
+
+| Sujet | Décision du propriétaire | Écart aux références |
+|---|---|---|
+| Fermeture de la fenêtre | Réduit dans la zone de notification ; widget et raccourcis restent actifs ; « Quitter » arrête tout. Lancement avec Windows en option (désactivé par défaut, HKCU\Run). | D-14/D-17 : même processus conservé ; fonctionnement en arrière-plan explicite et réglable. |
+| Capteurs | Sans pilote ; température CPU « indisponible » si Windows ne la fournit pas ; NVIDIA via `nvml.dll` du pilote installé (non redistribuée). | Conforme à D-18. Revue de licence NVML à consigner avant distribution. |
+| FPS | Via ETW (sans injection), seulement si le coût mesuré est négligeable. | Nouveau ; à mesurer. |
+| Nettoyage | Standard + approfondi (admin), avec aperçu, sélection, confirmation, Corbeille si possible, historique. | Conforme à D-11. |
+| Optimisation | Plus large que D-11 (services, effets visuels, tâches planifiées) **avec avertissement explicite des conséquences avant tout réglage risqué**, sauvegarde et restauration. | Écart à D-11 (services en lecture seule) décidé par le propriétaire. |
+| Historique / paramètres | Toutes les actions tracées localement (JSONL) ; paramètres JSON locaux. | SQLite (recommandation D-08) non utilisé : aucune dépendance tierce. |
+
+Mesures : widget seul (fenêtre fermée) 0,10 % du processeur en moyenne sur 20 s, 112 Mo de mémoire privée (Windows 11, 13/11/2026).
+
 ## Non vérifié à ce jour
 
 - Windows 10 Enterprise LTSC 2019/2021 (aucun environnement disponible).

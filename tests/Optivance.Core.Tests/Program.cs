@@ -179,5 +179,22 @@ static List<ScanEntry> Sample() =>
     }
 }
 
+{
+    // Monitoring : agrégation des compteurs Windows.
+    (string, double)[] engines =
+    [
+        ("pid_1_luid_0x00000000_0x0000D1A2_phys_0_eng_0_engtype_3D", 30),
+        ("pid_2_luid_0x00000000_0x0000D1A2_phys_0_eng_0_engtype_3D", 25),
+        ("pid_2_luid_0x00000000_0x0000D1A2_phys_0_eng_1_engtype_Copy", 90),
+        ("pid_3_luid_0x00000000_0x0000BEEF_phys_0_eng_0_engtype_3D", 10),
+    ];
+    Check("GPU : somme 3D de l'adaptateur le plus chargé", MonitoringMath.Gpu3dPercent(engines) == 55, MonitoringMath.Gpu3dPercent(engines)?.ToString());
+    Check("GPU : borné à 100 %", MonitoringMath.Gpu3dPercent([("luid_1_phys_0_engtype_3D", 80), ("luid_1_phys_0_engtype_3D", 70)]) == 100);
+    Check("GPU : aucun moteur 3D → indisponible", MonitoringMath.Gpu3dPercent([("luid_1_phys_0_engtype_Copy", 5)]) is null);
+    Check("thermique : zone la plus chaude", Math.Abs(MonitoringMath.HottestZoneCelsius([300.15, 333.15, 0])!.Value - 60) < 1e-9);
+    Check("thermique : valeurs absurdes ignorées", MonitoringMath.HottestZoneCelsius([0, 5000]) is null);
+    Check("réseau : boucle locale exclue", MonitoringMath.NetworkTotal([("Intel Ethernet", 100), ("Loopback Pseudo-Interface 1", 999)]) == 100);
+}
+
 Console.WriteLine($"{passed} réussis, {failures} échoués");
 return failures == 0 ? 0 : 1;
