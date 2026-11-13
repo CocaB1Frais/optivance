@@ -15,6 +15,15 @@ public partial class MainWindow : Window
         _storagePage.StatusChanged += SetStatus;
         PageHost.Content = _storagePage;
         UpdateNavigation(StorageNavigation);
+
+        // OPTIVANCE.exe --scan <chemin> : analyse lancée dès l'ouverture.
+        var arguments = Environment.GetCommandLineArgs();
+        var scanIndex = Array.IndexOf(arguments, "--scan");
+        if (scanIndex > 0 && scanIndex + 1 < arguments.Length)
+        {
+            var target = arguments[scanIndex + 1];
+            Loaded += (_, _) => _storagePage.ScanAtStartup(target);
+        }
     }
 
     private void Navigation_Click(object sender, RoutedEventArgs e)

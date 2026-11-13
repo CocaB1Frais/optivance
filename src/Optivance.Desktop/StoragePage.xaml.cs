@@ -1,541 +1,901 @@
-using System.Collections.ObjectModel;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
-using Microsoft.Win32;
+using System.Windows.Threading;
 using Optivance.Core;
+using Optivance.Core.Storage;
+using Optivance.Desktop.Storage;
 using Optivance.Infrastructure;
 
 namespace Optivance.Desktop;
 
 public partial class StoragePage : UserControl
 {
-    private const int MaxVisibleWarnings = 25;
-    private readonly ScanEngineClient _engine = new();
-    private readonly ObservableCollection<string> _warnings = [];
-    private CancellationTokenSource? _scanCancellation;
-    private CancellationTokenSource? _navigationCancellation;
-    private Task? _activeScan;
-    private StorageIndex? _index;
-    private long _warningCount;
-    private int _viewGeneration;
-    private int _currentDirectoryId;
-    private bool _hasScanResult;
+    private const int DirectoryColor = 0x5A6272;
 
-    public event Action<string>? StatusChanged;
-    public bool IsScanning => _activeScan is { IsCompleted: false };
+    private readonly StorageScanner _scanner = new();
+    private readonly RowCollection<TreeRow> _rows = new();
+    private readonly HashSet<int> _expanded = [];
+    private readonly List<ScanWarning> _warnings = [];
+    private readonly DispatcherTimer _clock = new() { Interval = TimeSpan.FromMilliseconds(100) };
+    private readonly DispatcherTimer _searchDelay = new() { Interval = TimeSpan.FromMilliseconds(220) };
+    private readonly Stopwatch _scanWatch = new();
+
+    private CancellationTokenSource? _scanCancellation;
+    private Task? _scanTask;
+    private StorageTree? _tree;
+    private ScanSummary? _summary;
+    private int[] _extensionColors = [];
+    private int[] _allFiles = [];
+    private int? _extensionFilter;
+    private StorageSortKey _sortKey = StorageSortKey.Size;
+    private bool _sortDescending = true;
+    private long _progressItems;
+    private bool _syncing;
+    private int _filterGeneration;
 
     public StoragePage()
     {
         InitializeComponent();
-        WarningsList.ItemsSource = _warnings;
-        ResultsGrid.LoadingRow += ResultsGrid_LoadingRow;
-        DriveSelector.ItemsSource = GetReadyDrives();
-        Treemap.TileClicked += SelectRow;
-        Treemap.DirectoryDoubleClicked += row => _ = NavigateToAsync(row.Id);
-        Treemap.LayoutCompleted += milliseconds =>
-        {
-            if (milliseconds > 1000)
-            {
-                SetScanStatus($"Treemap recalculée en {milliseconds:N0} ms.", error: false);
-            }
-        };
-        Treemap.LayoutFailed += exception => SetScanStatus($"La treemap n’a pas pu être calculée : {exception.Message}", error: true);
+        TreeList.ItemsSource = _rows;
+        var drives = DriveItem.Load();
+        DriveSelector.ItemsSource = drives;
+        DriveSelector.SelectedItem = drives.FirstOrDefault(drive => drive.Root.StartsWith("C:", StringComparison.OrdinalIgnoreCase)) ?? drives.FirstOrDefault();
 
-        if (DriveSelector.Items.Count > 0)
+        _clock.Tick += (_, _) => UpdateOverlay();
+        _searchDelay.Tick += (_, _) =>
         {
-            DriveSelector.SelectedIndex = 0;
-        }
-        RebuildBreadcrumb(null);
+            _searchDelay.Stop();
+            _ = ApplyFileFilterAsync();
+        };
+        Treemap.ItemClicked += Treemap_ItemClicked;
+        Treemap.ItemDoubleClicked += Treemap_ItemDoubleClicked;
+        Treemap.ItemRightClicked += Treemap_ItemRightClicked;
+        Treemap.HoverChanged += Treemap_HoverChanged;
+        PreviewKeyDown += Page_PreviewKeyDown;
     }
 
-    private static List<DriveChoice> GetReadyDrives()
+    public event Action<string>? StatusChanged;
+
+    public bool IsScanning => _scanTask is { IsCompleted: false };
+
+    public async Task CancelAndWaitAsync()
     {
-        var drives = new List<DriveChoice>();
-        foreach (var drive in DriveInfo.GetDrives())
+        _scanCancellation?.Cancel();
+        if (_scanTask is { } task)
         {
             try
             {
-                if (drive.IsReady)
-                {
-                    var label = string.IsNullOrWhiteSpace(drive.VolumeLabel) ? "Volume" : drive.VolumeLabel;
-                    drives.Add(new DriveChoice($"{drive.Name}  ·  {label}", drive.RootDirectory.FullName));
-                }
+                await task;
             }
-            catch (IOException)
+            catch (Exception exception) when (exception is OperationCanceledException or IOException or InvalidOperationException)
             {
-                // Le volume peut être retiré pendant l’inventaire initial.
+                // L'erreur a déjà été présentée ou l'analyse a été annulée.
             }
-            catch (UnauthorizedAccessException)
-            {
-                // Les volumes non accessibles ne sont pas proposés.
-            }
-        }
-        return drives;
-    }
-
-    private void DriveSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (DriveSelector.SelectedItem is DriveChoice drive && !IsScanning)
-        {
-            TargetPath.Text = drive.Path;
         }
     }
 
-    private void Browse_Click(object sender, RoutedEventArgs e)
+    // ───────────────────────────── Analyse ─────────────────────────────
+
+    private void ScanButton_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFolderDialog
+        if (DriveSelector.SelectedItem is DriveItem drive)
         {
-            Title = "Sélectionner un dossier à analyser",
-            Multiselect = false,
-            InitialDirectory = Directory.Exists(TargetPath.Text)
-                ? TargetPath.Text
-                : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
-        };
+            StartScan(drive.Root, preferMft: true);
+        }
+    }
+
+    private void FolderButton_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFolderDialog { Title = "Choisir le dossier à analyser" };
         if (dialog.ShowDialog(Window.GetWindow(this)) == true)
         {
-            TargetPath.Text = dialog.FolderName;
+            StartScan(dialog.FolderName, preferMft: true);
         }
     }
 
-    private async void Analyze_Click(object sender, RoutedEventArgs e)
+    private void CancelButton_Click(object sender, RoutedEventArgs e)
     {
-        var target = TargetPath.Text.Trim();
-        if (string.IsNullOrWhiteSpace(target) || !Directory.Exists(target))
-        {
-            SetScanStatus("Choisissez un dossier ou un volume accessible.", error: true);
-            return;
-        }
+        _scanCancellation?.Cancel();
+        OverlayTitle.Text = "Annulation…";
+    }
+
+    private void StartScan(string target, bool preferMft)
+    {
         if (IsScanning)
         {
             return;
         }
-
-        _index = null;
-        _hasScanResult = false;
-        _warningCount = 0;
-        _warnings.Clear();
-        ResultsGrid.ItemsSource = null;
-        Treemap.SetItems([]);
-        TreemapEmptyTitle.Text = "Analyse en cours";
-        TreemapEmptyDescription.Text = "Le moteur parcourt la cible et collecte les tailles réelles.";
-        TreemapEmptyState.Visibility = Visibility.Visible;
-        FilesSummary.Text = LogicalSummary.Text = AllocatedSummary.Text = "—";
-        ResultCount.Text = "Analyse en cours";
-        WarningsExpander.Header = "Avertissements d’analyse · 0";
-        ScanProgress.Visibility = Visibility.Visible;
-        ScanProgress.IsIndeterminate = true;
-        CancelButton.IsEnabled = true;
-        AnalyzeButton.IsEnabled = BrowseButton.IsEnabled = DriveSelector.IsEnabled = TargetPath.IsEnabled = false;
-        BackButton.IsEnabled = false;
-        _scanCancellation = new CancellationTokenSource();
-        _activeScan = RunScanAsync(Path.GetFullPath(target), _scanCancellation.Token);
-        await _activeScan;
-        _activeScan = null;
+        _scanTask = RunScanAsync(target, preferMft);
     }
 
-    private async Task RunScanAsync(string target, CancellationToken cancellationToken)
+    private async Task RunScanAsync(string target, bool preferMft)
     {
+        _scanCancellation = new CancellationTokenSource();
+        _warnings.Clear();
+        _progressItems = 0;
+        var fast = preferMft && MftScanClient.CanScan(target, out _);
+        SetScanning(true, fast
+            ? "Une fenêtre d’autorisation Windows va s’afficher : acceptez-la pour l’analyse rapide (lecture seule de la MFT). Sinon, l’analyse standard prendra le relais."
+            : "Analyse standard : parcours des dossiers.");
+        OverlayTitle.Text = fast ? "Analyse rapide en cours…" : "Analyse en cours…";
+        Status($"Analyse de {target}…");
+        var progress = new Progress<ScanUpdate>(update =>
+        {
+            switch (update)
+            {
+                case ScanProgress scanProgress:
+                    if (_progressItems == 0)
+                    {
+                        OverlayHint.Text = fast ? "Lecture de la table des fichiers (MFT) en lecture seule…" : "Parcours des dossiers…";
+                    }
+                    _progressItems = Math.Max(_progressItems, scanProgress.VisitedFiles + scanProgress.VisitedDirectories);
+                    break;
+                case ScanWarning warning:
+                    _warnings.Add(warning);
+                    if (warning.Message.StartsWith("Analyse rapide", StringComparison.Ordinal))
+                    {
+                        OverlayTitle.Text = "Analyse standard en cours…";
+                        OverlayHint.Text = warning.Message;
+                    }
+                    break;
+            }
+        });
+
         try
         {
-            SetScanStatus($"Analyse de {target}…", error: false);
-            var progress = new Progress<ScanUpdate>(ApplyUpdate);
-            var result = await _engine.ScanAsync(target, progress, cancellationToken);
-            var summary = result.Summary;
-            _index = new StorageIndex(target, result.Entries, summary.State == ScanState.Completed);
-            _hasScanResult = true;
-            FilesSummary.Text = summary.Files.ToString("N0", CultureInfo.CurrentCulture);
-            LogicalSummary.Text = FormatBytes(summary.UniqueLogicalBytes);
-            AllocatedSummary.Text = FormatBytes(summary.UniqueAllocatedBytes);
-            WarningsExpander.Header = $"Avertissements d’analyse · {summary.Warnings:N0}{(summary.Warnings > _warnings.Count ? " (premiers affichés)" : string.Empty)}";
-            _currentDirectoryId = 0;
-            await ShowCurrentDirectoryAsync(CancellationToken.None);
-
-            var stateText = summary.State switch
-            {
-                ScanState.Completed => "Analyse terminée",
-                ScanState.Interrupted => "Analyse interrompue · résultats partiels",
-                _ => "Analyse échouée"
-            };
-            SetScanStatus(
-                $"{stateText} · {summary.Elapsed.TotalSeconds:N1} s · {summary.EngineMetrics.BytesSent / 1024d / 1024d:N1} Mo transférés",
-                error: summary.State == ScanState.Failed);
-            ResultCount.Text = $"{summary.Directories:N0} dossiers · {summary.Files:N0} fichiers · {summary.Warnings:N0} avertissements · {summary.Elapsed.TotalSeconds:N1} s";
+            var result = await _scanner.ScanAsync(target, preferMft, progress, _scanCancellation.Token);
+            OverlayTitle.Text = "Préparation de l’affichage…";
+            var tree = await Task.Run(() => new StorageTree(Path.GetFullPath(target), result.Entries));
+            var files = await Task.Run(tree.FilesBySize);
+            ShowResult(tree, files, result.Summary);
         }
         catch (OperationCanceledException)
         {
-            SetScanStatus("L’analyse a été annulée.", error: false);
-            ResultCount.Text = "Analyse annulée";
+            Status("Analyse annulée.");
         }
-        catch (Exception exception)
+        catch (Exception exception) when (exception is IOException or InvalidOperationException or InvalidDataException or UnauthorizedAccessException)
         {
-            ResultCount.Text = "Résultats indisponibles";
-            TreemapEmptyTitle.Text = "Analyse indisponible";
-            TreemapEmptyDescription.Text = "Le moteur n’a pas pu terminer l’analyse.";
-            SetScanStatus($"Le moteur n’a pas pu terminer l’analyse : {exception.Message}", error: true);
+            Status("Analyse impossible.");
+            ConfirmDialog.Inform(Window.GetWindow(this), "Analyse impossible", exception.Message);
         }
         finally
         {
-            ScanProgress.Visibility = Visibility.Collapsed;
-            ScanProgress.IsIndeterminate = false;
-            ScanProgress.Value = 0;
-            CancelButton.IsEnabled = false;
-            AnalyzeButton.IsEnabled = BrowseButton.IsEnabled = DriveSelector.IsEnabled = TargetPath.IsEnabled = true;
-            _scanCancellation?.Dispose();
+            SetScanning(false, "");
+            _scanCancellation.Dispose();
             _scanCancellation = null;
         }
     }
 
-    private void ApplyUpdate(ScanUpdate update)
+    /// <summary>Lance une analyse au démarrage (option <c>--scan &lt;chemin&gt;</c>).</summary>
+    public void ScanAtStartup(string target)
     {
-        switch (update)
+        var full = Path.GetFullPath(target);
+        if (Directory.Exists(full))
         {
-            case ScanProgress progress:
-                SetScanStatus(
-                    $"Analyse en cours · {progress.VisitedDirectories:N0} dossiers · {progress.VisitedFiles:N0} fichiers · {FormatBytes(progress.UniqueLogicalBytes)} uniques · {progress.Elapsed.TotalSeconds:N0} s",
-                    error: false);
-                break;
-            case ScanWarning warning:
-                _warningCount++;
-                if (_warnings.Count < MaxVisibleWarnings)
-                {
-                    _warnings.Add($"{warning.Path} — {warning.Message}");
-                }
-                break;
-        }
-    }
-
-    private async Task ShowCurrentDirectoryAsync(CancellationToken cancellationToken)
-    {
-        var index = _index;
-        if (index is null)
-        {
-            return;
-        }
-
-        _navigationCancellation?.Cancel();
-        _navigationCancellation?.Dispose();
-        _navigationCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var token = _navigationCancellation.Token;
-        var generation = Interlocked.Increment(ref _viewGeneration);
-        var directoryId = _currentDirectoryId;
-        var rows = await Task.Run(() => index.BuildRows(directoryId, token), token);
-        if (token.IsCancellationRequested || generation != Volatile.Read(ref _viewGeneration))
-        {
-            return;
-        }
-
-        ResultsGrid.ItemsSource = rows;
-        ResultsGrid.SelectedItem = null;
-        Treemap.SetSelectedId(null);
-        Treemap.SetItems(rows);
-        var currentEntry = index.GetEntry(directoryId);
-        BackButton.IsEnabled = currentEntry.ParentId >= 0;
-        DirectoryPath.Text = index.GetPath(directoryId);
-        RebuildBreadcrumb(index);
-        var positiveCount = rows.Count(row => row.TreemapWeight > 0);
-        if (positiveCount > 0)
-        {
-            TreemapEmptyState.Visibility = Visibility.Collapsed;
+            StartScan(full, preferMft: true);
         }
         else
         {
-            TreemapEmptyTitle.Text = "Aucun élément mesurable";
-            TreemapEmptyDescription.Text = "Les éléments vides restent visibles dans le tableau; la treemap utilise les tailles logiques uniques.";
-            TreemapEmptyState.Visibility = Visibility.Visible;
+            ConfirmDialog.Inform(Window.GetWindow(this), "Analyse impossible", $"Le dossier n’existe pas : {full}");
         }
-
-        ResultCount.Text = $"{rows.Count:N0} éléments dans ce dossier" + (_hasScanResult ? $" · {index.Count:N0} entrées dans l’index" : string.Empty);
     }
 
-    private async Task NavigateToAsync(int directoryId)
+    private void SetScanning(bool scanning, string hint)
     {
-        var index = _index;
-        if (index is null || directoryId < 0 || directoryId >= index.Count || !index.GetEntry(directoryId).IsDirectory)
+        if (scanning)
+        {
+            WelcomePanel.Visibility = Visibility.Collapsed;
+        }
+        else if (_tree is null)
+        {
+            WelcomePanel.Visibility = Visibility.Visible;
+        }
+        ScanOverlay.Visibility = scanning ? Visibility.Visible : Visibility.Collapsed;
+        CancelButton.Visibility = scanning ? Visibility.Visible : Visibility.Collapsed;
+        ScanButton.IsEnabled = !scanning;
+        FolderButton.IsEnabled = !scanning;
+        DriveSelector.IsEnabled = !scanning;
+        OverlayHint.Text = hint;
+        if (scanning)
+        {
+            _scanWatch.Restart();
+            _clock.Start();
+            UpdateOverlay();
+        }
+        else
+        {
+            _clock.Stop();
+            _scanWatch.Stop();
+        }
+    }
+
+    private void UpdateOverlay() =>
+        OverlayCounters.Text = $"{StorageFormat.Count(_progressItems)} éléments · {StorageFormat.Duration(_scanWatch.Elapsed)}";
+
+    private void ShowResult(StorageTree tree, int[] files, ScanSummary summary)
+    {
+        _tree = tree;
+        _summary = summary;
+        _allFiles = files;
+        _extensionFilter = null;
+        _extensionColors = tree.Extensions.Select(ExtensionCatalog.ColorFor).ToArray();
+        _expanded.Clear();
+        _expanded.Add(0);
+        SearchBox.Text = "";
+
+        WelcomePanel.Visibility = Visibility.Collapsed;
+        SummaryCards.Visibility = Visibility.Visible;
+        MainArea.Visibility = Visibility.Visible;
+        TreemapSplitter.Visibility = Visibility.Visible;
+        TreemapCard.Visibility = Visibility.Visible;
+
+        RebuildRows(select: 0);
+        RefreshExtensions();
+        _ = ApplyFileFilterAsync();
+        UpdateSummary();
+        ZoomTreemap(0);
+        ShowNotice();
+        Status($"{tree.RootPath} · {StorageFormat.Bytes(tree.TotalBytes)} · {StorageFormat.Count(tree.Files(0))} fichiers · {StorageFormat.Duration(summary.Elapsed)} ({MethodLabel(summary.Method)})");
+    }
+
+    private void UpdateSummary()
+    {
+        if (_tree is null || _summary is null)
         {
             return;
         }
-        _currentDirectoryId = directoryId;
+        var tree = _tree;
+        var isDrive = string.Equals(Path.GetPathRoot(tree.RootPath), tree.RootPath, StringComparison.OrdinalIgnoreCase);
         try
         {
-            await ShowCurrentDirectoryAsync(CancellationToken.None);
+            var drive = new DriveInfo(tree.RootPath);
+            var used = (ulong)(drive.TotalSize - drive.TotalFreeSpace);
+            DiskUsedText.Text = $"{StorageFormat.Bytes(used)} / {StorageFormat.Bytes((ulong)drive.TotalSize)}";
+            DiskUsedBar.Width = Math.Max(2, ((Border)DiskUsedBar.Parent).ActualWidth * used / Math.Max(1, drive.TotalSize));
+            DiskUsedBar.Tag = (double)used / Math.Max(1, drive.TotalSize);
+            DiskDetailText.Text = isDrive
+                ? $"{StorageFormat.Bytes((ulong)drive.TotalFreeSpace)} libres · {drive.DriveFormat}"
+                : $"Dossier analysé sur {drive.Name.TrimEnd('\\')}";
         }
-        catch (OperationCanceledException)
+        catch (Exception exception) when (exception is IOException or ArgumentException or UnauthorizedAccessException)
         {
-            // Une navigation plus récente a remplacé celle-ci.
+            DiskUsedText.Text = "—";
+            DiskDetailText.Text = "Volume indisponible";
         }
-        catch (Exception exception)
+        TotalText.Text = StorageFormat.Bytes(tree.TotalBytes);
+        TotalDetailText.Text = $"{StorageFormat.Bytes(tree.TotalAllocated)} alloués sur le disque";
+        FilesText.Text = StorageFormat.Count(tree.Files(0));
+        FilesDetailText.Text = $"{StorageFormat.Count(tree.Extensions.Count(e => e.Files > 0))} types de fichiers";
+        FoldersText.Text = StorageFormat.Count(tree.Folders(0));
+        FoldersDetailText.Text = isDrive ? tree.RootPath : Path.GetFileName(tree.RootPath.TrimEnd('\\'));
+        DurationText.Text = StorageFormat.Duration(_summary.Elapsed);
+        StateText.Text = $"{MethodLabel(_summary.Method)} · {StateLabel(_summary)}";
+        MethodText.Text = _summary.Method == ScanMethods.Classic ? "ANALYSE STANDARD" : "ANALYSE RAPIDE · MFT";
+        MethodIcon.Text = _summary.Method == ScanMethods.Classic ? "" : "";
+        MethodBadge.Visibility = Visibility.Visible;
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
         {
-            SetScanStatus($"Impossible d’afficher ce dossier : {exception.Message}", error: true);
-        }
-    }
-
-    private async void Back_Click(object sender, RoutedEventArgs e)
-    {
-        if (_index is null)
-        {
-            return;
-        }
-        var parentId = _index.GetEntry(_currentDirectoryId).ParentId;
-        if (parentId >= 0)
-        {
-            await NavigateToAsync(parentId);
-        }
-    }
-
-    private void RebuildBreadcrumb(StorageIndex? index)
-    {
-        BreadcrumbPanel.Children.Clear();
-        if (index is null)
-        {
-            var initial = new TextBlock { Text = "Aucun résultat", Foreground = (Brush)FindResource("MutedTextBrush"), VerticalAlignment = VerticalAlignment.Center, FontSize = 10 };
-            BreadcrumbPanel.Children.Add(initial);
-            return;
-        }
-
-        var crumbs = index.BuildBreadcrumb(_currentDirectoryId);
-        for (var position = 0; position < crumbs.Count; position++)
-        {
-            var crumb = crumbs[position];
-            if (position > 0)
+            if (DiskUsedBar.Tag is double fraction)
             {
-                BreadcrumbPanel.Children.Add(new TextBlock { Text = "›", Foreground = (Brush)FindResource("MutedTextBrush"), Margin = new Thickness(4, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center });
+                DiskUsedBar.Width = Math.Max(2, ((Border)DiskUsedBar.Parent).ActualWidth * fraction);
             }
+        });
+    }
 
-            var button = new Button
+    private void ShowNotice()
+    {
+        if (_summary is null)
+        {
+            return;
+        }
+        string? notice = _summary.Notice;
+        if (notice is null && _summary.IsPartial)
+        {
+            var details = string.Join(" ", _warnings.Take(3).Select(warning => warning.Message));
+            notice = $"Analyse rapide partielle : certaines entrées n’ont pas pu être lues. {details}";
+        }
+        else if (notice is null && _summary.State == ScanState.Interrupted)
+        {
+            notice = "Analyse interrompue : les résultats affichés sont incomplets.";
+        }
+        else if (notice is null && _summary.Method == ScanMethods.Classic && _summary.Warnings > 0)
+        {
+            notice = $"{StorageFormat.Count(_summary.Warnings)} élément(s) inaccessible(s) ou ignoré(s) (droits, liens). L’analyse rapide (MFT) lit tout le disque.";
+        }
+        NoticeText.Text = notice ?? "";
+        NoticeBar.Visibility = notice is null ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private void HideNotice_Click(object sender, RoutedEventArgs e) => NoticeBar.Visibility = Visibility.Collapsed;
+
+    private static string MethodLabel(string method) => method switch
+    {
+        ScanMethods.MftRaw => "MFT directe",
+        ScanMethods.MftEnum => "MFT (énumération)",
+        _ => "Standard"
+    };
+
+    private static string StateLabel(ScanSummary summary) => summary.State switch
+    {
+        ScanState.Completed => "terminée",
+        ScanState.Interrupted when summary.IsPartial => "partielle",
+        ScanState.Interrupted => "interrompue",
+        _ => "échec"
+    };
+
+    // ───────────────────────────── Couleurs ─────────────────────────────
+
+    private int ColorOf(int id)
+    {
+        if (_tree is null)
+        {
+            return DirectoryColor;
+        }
+        var extension = _tree.ExtensionId(id);
+        if (extension < 0 || extension >= _extensionColors.Length)
+        {
+            return DirectoryColor;
+        }
+        var color = _extensionColors[extension];
+        return _extensionFilter is { } filter && filter != extension ? Blend(color, 0x20242C, 0.82) : color;
+    }
+
+    private static int Blend(int rgb, int with, double amount)
+    {
+        int Channel(int shift) => (int)Math.Round(((rgb >> shift) & 0xFF) * (1 - amount) + ((with >> shift) & 0xFF) * amount);
+        return (Channel(16) << 16) | (Channel(8) << 8) | Channel(0);
+    }
+
+    // ───────────────────────────── Arborescence ─────────────────────────────
+
+    private void RebuildRows(int? select = null)
+    {
+        if (_tree is null)
+        {
+            return;
+        }
+        var selectedId = select ?? (TreeList.SelectedItem as TreeRow)?.Id;
+        var rows = new List<TreeRow>(Math.Min(_tree.Count, 4096));
+        AppendRows(rows, 0, 0);
+        _syncing = true;
+        _rows.Reset(rows);
+        if (selectedId is { } id)
+        {
+            var row = rows.FirstOrDefault(candidate => candidate.Id == id);
+            TreeList.SelectedItem = row;
+            if (row is not null)
             {
-                Content = crumb.Label,
-                Tag = crumb.Id,
-                Padding = new Thickness(5, 3, 5, 3),
-                Margin = new Thickness(0),
-                Background = position == crumbs.Count - 1 ? (Brush)FindResource("SelectedSurfaceBrush") : Brushes.Transparent,
-                BorderBrush = position == crumbs.Count - 1 ? (Brush)FindResource("AccentStrongBrush") : Brushes.Transparent,
-                Foreground = position == crumbs.Count - 1 ? Brushes.White : (Brush)FindResource("MutedTextBrush"),
-                FontSize = 10,
-                MaxWidth = 360,
-                ToolTip = index.GetPath(crumb.Id)
-            };
-            button.Click += Breadcrumb_Click;
-            BreadcrumbPanel.Children.Add(button);
+                TreeList.ScrollIntoView(row);
+            }
+        }
+        _syncing = false;
+    }
+
+    private void AppendRows(List<TreeRow> rows, int id, int depth)
+    {
+        var tree = _tree!;
+        var row = new TreeRow(tree, id, depth, ColorOf);
+        rows.Add(row);
+        if (row.HasChildren && _expanded.Contains(id))
+        {
+            row.IsExpanded = true;
+            foreach (var child in tree.Children(id, _sortKey, _sortDescending))
+            {
+                AppendRows(rows, child, depth + 1);
+            }
         }
     }
 
-    private async void Breadcrumb_Click(object sender, RoutedEventArgs e)
+    private void Toggle(TreeRow row, bool? expand = null)
     {
-        if (sender is Button { Tag: int id })
+        if (_tree is null || !row.HasChildren)
         {
-            await NavigateToAsync(id);
+            return;
         }
-    }
-
-    private void ResultsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (ResultsGrid.SelectedItem is StorageRow row)
+        var shouldExpand = expand ?? !row.IsExpanded;
+        if (shouldExpand == row.IsExpanded)
         {
-            Treemap.SetSelectedId(row.Id);
+            return;
+        }
+        var items = _rows.Items;
+        var index = items.IndexOf(row);
+        if (index < 0)
+        {
+            return;
+        }
+        if (shouldExpand)
+        {
+            _expanded.Add(row.Id);
+            row.IsExpanded = true;
+            var inserted = new List<TreeRow>();
+            foreach (var child in _tree.Children(row.Id, _sortKey, _sortDescending))
+            {
+                AppendRows(inserted, child, row.Depth + 1);
+            }
+            items.InsertRange(index + 1, inserted);
         }
         else
         {
-            Treemap.SetSelectedId(null);
+            _expanded.Remove(row.Id);
+            row.IsExpanded = false;
+            var end = index + 1;
+            while (end < items.Count && items[end].Depth > row.Depth)
+            {
+                end++;
+            }
+            items.RemoveRange(index + 1, end - index - 1);
+        }
+        _syncing = true;
+        _rows.Changed();
+        TreeList.SelectedItem = row;
+        _syncing = false;
+    }
+
+    private void Expander_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: TreeRow row })
+        {
+            Toggle(row);
+            e.Handled = true;
         }
     }
 
-    private void SelectRow(StorageRow row)
+    private void TreeList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
-        ResultsGrid.SelectedItem = row;
-        ResultsGrid.ScrollIntoView(row);
-        Treemap.SetSelectedId(row.Id);
-    }
-
-    private async void ResultsGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
-    {
-        if (ResultsGrid.SelectedItem is not StorageRow row)
+        if (TreeList.SelectedItem is not TreeRow row || e.OriginalSource is not DependencyObject source || ItemsControl.ContainerFromElement(TreeList, source) is null)
         {
             return;
         }
-        e.Handled = true;
-        await OpenRowAsync(row);
-    }
-
-    private void ResultsGrid_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
-    {
-        var row = ItemsControl.ContainerFromElement(ResultsGrid, e.OriginalSource as DependencyObject) as DataGridRow;
-        if (row is not null)
+        if (row.IsDirectory)
         {
-            row.IsSelected = true;
-            row.Focus();
+            Toggle(row);
+        }
+        else
+        {
+            Run(() => ShellOperations.Open(_tree!.GetPath(row.Id)));
         }
     }
 
-    private void ResultsGrid_LoadingRow(object? sender, DataGridRowEventArgs e)
+    private void TreeList_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        var menu = new ContextMenu();
-        menu.Opened += (_, _) => menu.DataContext = menu.PlacementTarget is FrameworkElement target ? target.DataContext : e.Row.DataContext;
-        menu.Items.Add(CreateContextItem("Ouvrir", ContextOpen_Click));
-        menu.Items.Add(CreateContextItem("Ouvrir l’emplacement dans l’Explorateur", ContextOpenLocation_Click));
-        menu.Items.Add(new Separator());
-        menu.Items.Add(CreateContextItem("Copier le chemin", ContextCopyPath_Click));
-        menu.Items.Add(CreateContextItem("Copier le nom", ContextCopyName_Click));
-        menu.Items.Add(new Separator());
-        menu.Items.Add(CreateContextItem("Propriétés", ContextProperties_Click));
-        e.Row.ContextMenu = menu;
+        if (TreeList.SelectedItem is not TreeRow row || _tree is null)
+        {
+            return;
+        }
+        switch (e.Key)
+        {
+            case Key.Right when row.HasChildren && !row.IsExpanded:
+                Toggle(row, true);
+                e.Handled = true;
+                break;
+            case Key.Left when row.IsExpanded:
+                Toggle(row, false);
+                e.Handled = true;
+                break;
+            case Key.Left when row.Id > 0:
+                RevealInTree(_tree.Parent(row.Id));
+                e.Handled = true;
+                break;
+            case Key.Enter:
+                if (row.IsDirectory)
+                {
+                    Toggle(row);
+                }
+                else
+                {
+                    Run(() => ShellOperations.Open(_tree.GetPath(row.Id)));
+                }
+                e.Handled = true;
+                break;
+            case Key.Delete:
+                _ = DeleteAsync(row.Id, Keyboard.Modifiers.HasFlag(ModifierKeys.Shift));
+                e.Handled = true;
+                break;
+        }
     }
 
-    private static MenuItem CreateContextItem(string header, RoutedEventHandler handler)
+    private void TreeList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        var item = new MenuItem { Header = header };
-        item.Click += handler;
+        if (_syncing || TreeList.SelectedItem is not TreeRow row || _tree is null)
+        {
+            return;
+        }
+        Treemap.SetSelected(row.Id);
+        Status(_tree.GetPath(row.Id));
+    }
+
+    private void TreeHeader_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not GridViewColumnHeader { Tag: string tag } || !Enum.TryParse<StorageSortKey>(tag, out var key))
+        {
+            return;
+        }
+        _sortDescending = key == _sortKey ? !_sortDescending : key != StorageSortKey.Name;
+        _sortKey = key;
+        RebuildRows();
+    }
+
+    /// <summary>Déplie les ancêtres puis sélectionne l'élément dans l'arborescence.</summary>
+    private void RevealInTree(int id)
+    {
+        if (_tree is null)
+        {
+            return;
+        }
+        foreach (var ancestor in _tree.Ancestry(id).SkipLast(1))
+        {
+            _expanded.Add(ancestor);
+        }
+        ViewTabs.SelectedIndex = 0;
+        RebuildRows(select: id);
+        Treemap.SetSelected(id);
+        TreeList.Focus();
+    }
+
+    // ───────────────────────────── Treemap ─────────────────────────────
+
+    private void ZoomTreemap(int id)
+    {
+        if (_tree is null)
+        {
+            return;
+        }
+        var root = _tree.IsDirectory(id) ? id : Math.Max(0, _tree.Parent(id));
+        Treemap.SetData(_tree, root, ColorOf);
+        TreemapTitle.Text = $"{_tree.GetPath(root)}  ·  {StorageFormat.Bytes(_tree.Size(root))}";
+        TreemapUpButton.IsEnabled = root != 0;
+    }
+
+    private void Treemap_ItemClicked(int id) => RevealInTree(id);
+
+    private void Treemap_ItemDoubleClicked(int id) => ZoomTreemap(id);
+
+    private void Treemap_ItemRightClicked(int id)
+    {
+        RevealInTree(id);
+        var menu = BuildMenu(id);
+        menu.PlacementTarget = Treemap;
+        menu.Placement = PlacementMode.MousePoint;
+        menu.IsOpen = true;
+    }
+
+    private void Treemap_HoverChanged(int id)
+    {
+        if (_tree is null || id < 0)
+        {
+            TreemapHover.Text = "";
+            return;
+        }
+        var extension = _tree.ExtensionId(id);
+        var kind = extension >= 0 ? ExtensionCatalog.Describe(_tree.Extensions[extension].Extension) : "Dossier";
+        TreemapHover.Text = $"{_tree.GetPath(id)}  ·  {StorageFormat.Bytes(_tree.Size(id))}  ·  {kind}";
+    }
+
+    private void TreemapUp_Click(object sender, RoutedEventArgs e)
+    {
+        if (_tree is not null && Treemap.RootId > 0)
+        {
+            ZoomTreemap(_tree.Parent(Treemap.RootId));
+        }
+    }
+
+    private void TreemapReset_Click(object sender, RoutedEventArgs e) => ZoomTreemap(0);
+
+    // ───────────────────────────── Extensions et fichiers ─────────────────────────────
+
+    private void RefreshExtensions()
+    {
+        if (_tree is null)
+        {
+            return;
+        }
+        var selected = (ExtensionList.SelectedItem as ExtensionRow)?.Stats.Id;
+        var rows = _tree.Extensions.Where(stats => stats.Files > 0)
+            .OrderByDescending(stats => stats.Bytes)
+            .Select(stats => new ExtensionRow(stats, _tree.TotalBytes, _extensionColors[stats.Id]))
+            .ToList();
+        _syncing = true;
+        ExtensionList.ItemsSource = rows;
+        ExtensionList.SelectedItem = rows.FirstOrDefault(row => row.Stats.Id == selected);
+        _syncing = false;
+        ExtensionCount.Text = $"{StorageFormat.Count(rows.Count)} types";
+    }
+
+    private void ExtensionList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncing || _tree is null)
+        {
+            return;
+        }
+        if (ExtensionList.SelectedItem is ExtensionRow row)
+        {
+            SetExtensionFilter(row.Stats.Id);
+        }
+    }
+
+    private void SetExtensionFilter(int? extension)
+    {
+        if (_tree is null)
+        {
+            return;
+        }
+        _extensionFilter = extension;
+        if (extension is { } id)
+        {
+            var stats = _tree.Extensions[id];
+            FilterText.Text = $"{stats.Extension} · {ExtensionCatalog.Describe(stats.Extension)} · {StorageFormat.Bytes(stats.Bytes)}";
+            FilterSwatch.Background = Palette.Brush(_extensionColors[id]);
+            FilterChip.Visibility = Visibility.Visible;
+            ViewTabs.SelectedItem = FilesTab;
+        }
+        else
+        {
+            FilterChip.Visibility = Visibility.Collapsed;
+            _syncing = true;
+            ExtensionList.SelectedItem = null;
+            _syncing = false;
+        }
+        Treemap.Refresh(ColorOf);
+        _ = ApplyFileFilterAsync();
+    }
+
+    private void ClearExtensionFilter_Click(object sender, RoutedEventArgs e) => SetExtensionFilter(null);
+
+    private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        var empty = string.IsNullOrEmpty(SearchBox.Text);
+        SearchHint.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
+        ClearSearchButton.Visibility = empty ? Visibility.Collapsed : Visibility.Visible;
+        if (!empty && _tree is not null)
+        {
+            ViewTabs.SelectedItem = FilesTab;
+        }
+        _searchDelay.Stop();
+        _searchDelay.Start();
+    }
+
+    private void ClearSearch_Click(object sender, RoutedEventArgs e) => SearchBox.Text = "";
+
+    private async Task ApplyFileFilterAsync()
+    {
+        if (_tree is null)
+        {
+            return;
+        }
+        var tree = _tree;
+        var source = _allFiles;
+        var extension = _extensionFilter;
+        var search = SearchBox.Text.Trim();
+        var generation = ++_filterGeneration;
+        var ids = await Task.Run(() =>
+        {
+            if (extension is null && search.Length == 0)
+            {
+                return source;
+            }
+            var result = new List<int>();
+            foreach (var id in source)
+            {
+                if (extension is { } wanted && tree.ExtensionId(id) != wanted)
+                {
+                    continue;
+                }
+                if (search.Length > 0 && tree.Name(id).IndexOf(search, StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    continue;
+                }
+                result.Add(id);
+            }
+            return result.ToArray();
+        });
+        if (generation != _filterGeneration)
+        {
+            return;
+        }
+        FileList.ItemsSource = new VirtualFileList(tree, ids, ColorOf);
+        FilesTabCount.Text = StorageFormat.Count(ids.Length);
+    }
+
+    private void ViewTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // Rien de particulier : les deux vues restent synchronisées avec la treemap.
+    }
+
+    private void FileList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (FileList.SelectedItem is FileRow row && _tree is not null)
+        {
+            Treemap.SetSelected(row.Id);
+            Status(_tree.GetPath(row.Id));
+        }
+    }
+
+    private void FileList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (FileList.SelectedItem is FileRow row && e.OriginalSource is DependencyObject source && ItemsControl.ContainerFromElement(FileList, source) is not null)
+        {
+            RevealInTree(row.Id);
+        }
+    }
+
+    private void FileList_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (FileList.SelectedItem is not FileRow row || _tree is null)
+        {
+            return;
+        }
+        if (e.Key == Key.Delete)
+        {
+            _ = DeleteAsync(row.Id, Keyboard.Modifiers.HasFlag(ModifierKeys.Shift));
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Enter)
+        {
+            Run(() => ShellOperations.Open(_tree.GetPath(row.Id)));
+            e.Handled = true;
+        }
+    }
+
+    // ───────────────────────────── Menu contextuel ─────────────────────────────
+
+    private void List_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        var id = sender == TreeList ? (TreeList.SelectedItem as TreeRow)?.Id : (FileList.SelectedItem as FileRow)?.Id;
+        if (id is null || _tree is null || sender is not FrameworkElement element)
+        {
+            e.Handled = true;
+            return;
+        }
+        element.ContextMenu = BuildMenu(id.Value);
+    }
+
+    private ContextMenu BuildMenu(int id)
+    {
+        var tree = _tree!;
+        var path = tree.GetPath(id);
+        var menu = new ContextMenu();
+        menu.Items.Add(Item("", tree.IsDirectory(id) ? "Ouvrir le dossier" : "Ouvrir", "Entrée", () => ShellOperations.Open(path)));
+        menu.Items.Add(Item("", "Afficher dans l’Explorateur", null, () => ShellOperations.ShowInExplorer(path)));
+        menu.Items.Add(Item("", "Copier le chemin", null, () => Clipboard.SetText(path)));
+        menu.Items.Add(Item("", "Copier le nom", null, () => Clipboard.SetText(id == 0 ? path : tree.Name(id))));
+        menu.Items.Add(Item("", "Propriétés", null, () => ShellOperations.ShowProperties(path)));
+        if (tree.IsDirectory(id))
+        {
+            menu.Items.Add(new Separator());
+            menu.Items.Add(Item("", "Centrer la treemap ici", null, () => ZoomTreemap(id)));
+            if (id != 0)
+            {
+                menu.Items.Add(Item("", "Analyser ce dossier", null, () => StartScan(path, preferMft: false)));
+            }
+        }
+        if (id != 0)
+        {
+            menu.Items.Add(new Separator());
+            menu.Items.Add(Item("", "Mettre à la Corbeille", "Suppr", () => _ = DeleteAsync(id, permanent: false)));
+            menu.Items.Add(Item("", "Supprimer définitivement", "Maj+Suppr", () => _ = DeleteAsync(id, permanent: true), danger: true));
+        }
+        return menu;
+    }
+
+    private MenuItem Item(string glyph, string text, string? gesture, Action action, bool danger = false)
+    {
+        var grid = new Grid { MinWidth = 250 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(26) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var foreground = danger ? Palette.Brush(0xF08A80) : null;
+        var icon = new TextBlock { Text = glyph, FontFamily = (FontFamily)FindResource("IconFont"), VerticalAlignment = VerticalAlignment.Center, FontSize = 13 };
+        var label = new TextBlock { Text = text, VerticalAlignment = VerticalAlignment.Center };
+        if (foreground is not null)
+        {
+            icon.Foreground = foreground;
+            label.Foreground = foreground;
+        }
+        grid.Children.Add(icon);
+        Grid.SetColumn(label, 1);
+        grid.Children.Add(label);
+        if (gesture is not null)
+        {
+            var hint = new TextBlock { Text = gesture, Foreground = Palette.Brush(0x7D8899), FontSize = 11, Margin = new Thickness(18, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+            Grid.SetColumn(hint, 2);
+            grid.Children.Add(hint);
+        }
+        var item = new MenuItem { Header = grid };
+        item.Click += (_, _) => Run(action);
         return item;
     }
 
-    private StorageRow? ContextRow(object sender) => (sender as FrameworkElement)?.DataContext as StorageRow;
-
-    private async void ContextOpen_Click(object sender, RoutedEventArgs e)
-    {
-        if (ContextRow(sender) is { } row)
-        {
-            await OpenRowAsync(row);
-        }
-    }
-
-    private void ContextOpenLocation_Click(object sender, RoutedEventArgs e)
-    {
-        if (ContextRow(sender) is { } row)
-        {
-            try
-            {
-                if (!PathExists(row))
-                {
-                    throw new FileNotFoundException("L’élément n’existe plus.", row.Path);
-                }
-                var explorer = new ProcessStartInfo("explorer.exe") { UseShellExecute = true };
-                explorer.ArgumentList.Add($"/select,{row.Path}");
-                Process.Start(explorer);
-            }
-            catch (Exception exception)
-            {
-                SetScanStatus($"Impossible d’ouvrir l’emplacement : {exception.Message}", error: true);
-            }
-        }
-    }
-
-    private void ContextCopyPath_Click(object sender, RoutedEventArgs e)
-    {
-        if (ContextRow(sender) is { } row)
-        {
-            CopyToClipboard(row.Path);
-        }
-    }
-
-    private void ContextCopyName_Click(object sender, RoutedEventArgs e)
-    {
-        if (ContextRow(sender) is { } row)
-        {
-            CopyToClipboard(row.Name);
-        }
-    }
-
-    private void ContextProperties_Click(object sender, RoutedEventArgs e)
-    {
-        if (ContextRow(sender) is not { } row)
-        {
-            return;
-        }
-        try
-        {
-            if (!PathExists(row))
-            {
-                throw new FileNotFoundException("L’élément n’existe plus.", row.Path);
-            }
-            Process.Start(new ProcessStartInfo(row.Path) { Verb = "properties", UseShellExecute = true });
-        }
-        catch (Exception exception)
-        {
-            SetScanStatus($"Impossible d’ouvrir les propriétés : {exception.Message}", error: true);
-        }
-    }
-
-    private async Task OpenRowAsync(StorageRow row)
-    {
-        if (row.IsDirectory)
-        {
-            await NavigateToAsync(row.Id);
-            return;
-        }
-
-        try
-        {
-            if (!File.Exists(row.Path))
-            {
-                throw new FileNotFoundException("Le fichier a été déplacé ou supprimé depuis l’analyse.", row.Path);
-            }
-            Process.Start(new ProcessStartInfo(row.Path) { UseShellExecute = true });
-            SetScanStatus($"Ouverture de {row.Name} avec l’application Windows par défaut.", error: false);
-        }
-        catch (Exception exception)
-        {
-            SetScanStatus($"Impossible d’ouvrir le fichier : {exception.Message}", error: true);
-        }
-    }
-
-    private static bool PathExists(StorageRow row) => row.IsDirectory ? Directory.Exists(row.Path) : File.Exists(row.Path);
-
-    private void CopyToClipboard(string value)
+    private void Run(Action action)
     {
         try
         {
-            Clipboard.SetText(value);
-            SetScanStatus("Copié dans le presse-papiers.", error: false);
+            action();
         }
-        catch (Exception exception)
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or IOException or InvalidOperationException or System.Runtime.InteropServices.ExternalException)
         {
-            SetScanStatus($"Impossible d’accéder au presse-papiers : {exception.Message}", error: true);
+            ConfirmDialog.Inform(Window.GetWindow(this), "Action impossible", exception.Message);
         }
     }
 
-    private void Cancel_Click(object sender, RoutedEventArgs e)
-    {
-        _scanCancellation?.Cancel();
-        CancelButton.IsEnabled = false;
-        SetScanStatus("Annulation demandée…", error: false);
-    }
+    // ───────────────────────────── Suppression ─────────────────────────────
 
-    public async Task CancelAndWaitAsync()
+    private async Task DeleteAsync(int id, bool permanent)
     {
-        if (_activeScan is not { IsCompleted: false } active)
+        if (_tree is null || id <= 0 || IsScanning || _tree.IsDeleted(id))
         {
             return;
         }
-        _scanCancellation?.Cancel();
-        await active;
-    }
-
-    private void SetScanStatus(string message, bool error)
-    {
-        ScanStatus.Text = message;
-        ScanStatus.Foreground = error ? Brushes.OrangeRed : Brushes.Gainsboro;
-        StatusChanged?.Invoke(message);
-    }
-
-    private static string FormatBytes(ulong bytes)
-    {
-        string[] units = ["o", "Ko", "Mo", "Go", "To", "Po"];
-        double value = bytes;
-        var unit = 0;
-        while (value >= 1024 && unit < units.Length - 1)
+        var tree = _tree;
+        var path = tree.GetPath(id);
+        var isDirectory = tree.IsDirectory(id);
+        var details = new List<(string, string)>
         {
-            value /= 1024;
-            unit++;
+            ("Élément", tree.Name(id)),
+            ("Emplacement", tree.GetPath(tree.Parent(id))),
+            ("Taille", StorageFormat.Bytes(tree.Size(id)))
+        };
+        if (isDirectory)
+        {
+            details.Add(("Contenu", $"{StorageFormat.Count(tree.Files(id))} fichiers, {StorageFormat.Count(tree.Folders(id))} dossiers"));
         }
-        return $"{value:N1} {units[unit]}";
+        if (tree.IsDuplicate(id))
+        {
+            details.Add(("Remarque", "Lien physique supplémentaire : le supprimer ne libère pas d’espace."));
+        }
+        var confirmed = permanent
+            ? ConfirmDialog.Ask(Window.GetWindow(this), "Supprimer définitivement ?", "Cet élément sera effacé sans passer par la Corbeille. Cette action est irréversible.", details, "Supprimer définitivement", danger: true)
+            : ConfirmDialog.Ask(Window.GetWindow(this), "Mettre à la Corbeille ?", "L’élément sera déplacé dans la Corbeille ; vous pourrez le restaurer depuis celle-ci.", details, "Mettre à la Corbeille", danger: false);
+        if (!confirmed)
+        {
+            return;
+        }
+
+        Mouse.OverrideCursor = Cursors.Wait;
+        string? error;
+        try
+        {
+            Status($"Suppression de {path}…");
+            error = await Task.Run(() => ShellOperations.Delete(path, toRecycleBin: !permanent));
+        }
+        finally
+        {
+            Mouse.OverrideCursor = null;
+        }
+        if (error is not null)
+        {
+            Status("Suppression impossible.");
+            ConfirmDialog.Inform(Window.GetWindow(this), "Suppression impossible", $"{path}\n\n{error}");
+            return;
+        }
+
+        var parent = tree.Parent(id);
+        var freed = tree.Remove(id);
+        _allFiles = await Task.Run(tree.FilesBySize);
+        RebuildRows(select: parent);
+        RefreshExtensions();
+        _ = ApplyFileFilterAsync();
+        UpdateSummary();
+        Treemap.Refresh(ColorOf);
+        Status(permanent
+            ? $"Supprimé définitivement : {path} ({StorageFormat.Bytes(freed)} libérés)"
+            : $"Mis à la Corbeille : {path} ({StorageFormat.Bytes(freed)} ; l’espace sera libéré en vidant la Corbeille)");
     }
 
-    private sealed record DriveChoice(string Label, string Path)
+    // ───────────────────────────── Divers ─────────────────────────────
+
+    private void Page_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        public override string ToString() => Label;
+        if (e.Key == Key.F5 && !IsScanning)
+        {
+            ScanButton_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+        }
     }
+
+    private void Status(string message) => StatusChanged?.Invoke(message);
 }
