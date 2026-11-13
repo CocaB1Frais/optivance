@@ -21,9 +21,21 @@ Ce document consigne des arbitrages du propriétaire ; il ne modifie pas les doc
 | Précision de la taille allouée | 173,15 Go indexés pour 174,48 Go occupés (écart ≈ métafichiers NTFS et index de dossiers) | `ScanProbe --mft C` + `Win32_LogicalDisk` |
 | Ancienne méthode (énumération + ouvertures) | ~35-48 s, résultat partiel (hardlinks incomplets) | essai du 13/11 |
 
+## Comparaison avec WizTree 4.31 (13/11/2026 ~01:02, C:, l'un après l'autre, tous deux élevés, UAC comprise)
+
+| | WizTree 4.31 | OPTIVANCE (mft-raw) | Écart |
+|---|---|---|---|
+| Durée (lancement → résultat, clic UAC compris) | 4,9 s (export CSV 1 niveau) | 6,1 s (moteur seul : 3,7 s) | +1,2 s |
+| Fichiers | 695 176 | 695 128 | −48 (0,007 %) |
+| Dossiers | 131 385 | 131 304 | −81 (0,06 %) |
+| Taille allouée | 174 123 040 768 | 173 148 868 608 | −0,56 % (métafichiers NTFS exclus par OPTIVANCE) |
+| Taille logique | 205 010 393 772 | 187 850 859 278 | WizTree additionne chaque lien physique ; OPTIVANCE compte un fichier hardlinké une seule fois (D-07). Somme de tous les liens côté OPTIVANCE : ≈ 204 Go. |
+| Espace occupé (volume) | 174 491 447 296 | | référence Windows |
+
+Le CSV de WizTree (chemins personnels) a été supprimé après lecture de la ligne racine. Le temps du clic UAC n'est pas isolé : l'écart de durée est indicatif.
+
 ## Non vérifié à ce jour
 
-- Comparaison simultanée avec WizTree (mêmes volume, droits et instant).
 - Windows 10 Enterprise LTSC 2019/2021 (aucun environnement disponible).
 - Volumes très fragmentés dont la `$MFT` est décrite par une liste d'attributs (repli prévu, non rencontré).
 - Suppression déclenchée depuis l'interface (testée au niveau des fonctions, pas par un clic réel automatisé).
