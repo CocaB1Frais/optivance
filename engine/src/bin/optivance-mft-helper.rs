@@ -164,6 +164,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         let report = optivance_engine::clean::clean_category(category, run, &mut || channel.poll());
                         send(&mut channel.writer, &mut channel.profile, &report.to_json(category, run))?;
                     }
+                    SessionCommand::Tune(command) => {
+                        let code = optivance_engine::tune::execute(&command);
+                        send(&mut channel.writer, &mut channel.profile, &optivance_engine::tune::result_json(code))?;
+                    }
                     SessionCommand::Quit => break,
                     SessionCommand::Unknown => {}
                 }

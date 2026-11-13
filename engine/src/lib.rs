@@ -8,3 +8,4 @@ pub mod clean;
 pub mod fasthash;
 pub mod mft;
 pub mod protocol;
+pub mod tune;

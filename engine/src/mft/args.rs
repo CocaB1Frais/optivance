@@ -59,6 +59,8 @@ pub enum SessionCommand {
     Scan(char),
     /// Nettoyage approfondi d'une catégorie du catalogue : aperçu (`run == false`) ou suppression.
     Clean { category: &'static str, run: bool },
+    /// Réglage d'optimisation d'une liste fermée (voir `crate::tune`).
+    Tune(crate::tune::TuneCommand),
     Quit,
     /// Ligne non reconnue : ignorée (aucune autre commande n'est exécutable).
     Unknown,
@@ -68,6 +70,9 @@ pub fn parse_session_command(line: &str) -> SessionCommand {
     let line = line.trim_end_matches(['\r', '\n']);
     if line == "{\"v\":3,\"type\":\"quit\"}" {
         return SessionCommand::Quit;
+    }
+    if let Some(command) = crate::tune::parse_tune_command(line) {
+        return SessionCommand::Tune(command);
     }
     for (prefix, run) in [("{\"v\":3,\"type\":\"clean-analyze\",\"category\":\"", false), ("{\"v\":3,\"type\":\"clean-run\",\"category\":\"", true)] {
         if let Some(category) = line.strip_prefix(prefix).and_then(|rest| rest.strip_suffix("\"}")).and_then(crate::clean::category_id) {
