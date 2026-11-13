@@ -159,6 +159,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         channel.reset();
                         scan_volume(&mut channel, letter)?;
                     }
+                    SessionCommand::Clean { category, run } => {
+                        channel.reset();
+                        let report = optivance_engine::clean::clean_category(category, run, &mut || channel.poll());
+                        send(&mut channel.writer, &mut channel.profile, &report.to_json(category, run))?;
+                    }
                     SessionCommand::Quit => break,
                     SessionCommand::Unknown => {}
                 }

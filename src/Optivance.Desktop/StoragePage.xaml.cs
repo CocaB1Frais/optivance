@@ -218,6 +218,9 @@ public partial class StoragePage : UserControl
 
     public bool HasActiveSession => _scanner.Session is { IsActive: true };
 
+    /// <summary>Composant administrateur de la session (partagé avec le nettoyage approfondi).</summary>
+    public MftSession? Session => _scanner.Session is { IsActive: true } session ? session : null;
+
     public event Action? SessionChanged;
 
     public async Task DisposeSessionAsync()

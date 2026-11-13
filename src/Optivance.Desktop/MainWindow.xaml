@@ -1,4 +1,4 @@
-<Window x:Class="Optivance.Desktop.MainWindow"
+﻿<Window x:Class="Optivance.Desktop.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="OPTIVANCE" Height="820" Width="1360" MinHeight="620" MinWidth="980"
@@ -47,7 +47,7 @@
         <Image DockPanel.Dock="Top" Source="pack://application:,,,/Assets/logo.png" Height="38" HorizontalAlignment="Left" Margin="6,0,0,26"
                RenderOptions.BitmapScalingMode="HighQuality" />
         <StackPanel DockPanel.Dock="Bottom" Margin="6,0,0,0">
-          <TextBlock Text="V1 · Storage, Monitoring" FontSize="10.5" Foreground="#6E7A8C" />
+          <TextBlock Text="V1 · version de développement" FontSize="10.5" Foreground="#6E7A8C" />
         </StackPanel>
         <StackPanel x:Name="Navigation">
           <Button Style="{StaticResource NavButton}" x:Name="StorageNavigation" Uid="Storage" Click="Navigation_Click">

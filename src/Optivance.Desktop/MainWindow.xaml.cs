@@ -115,7 +115,7 @@ public partial class MainWindow : Window
                 "Settings" => new SettingsPage(this),
                 "History" => new HistoryPage(),
                 "Monitoring" => _monitoringPage = new Monitoring.MonitoringPage(ToggleWidget),
-                "Cleaning" => PlaceholderPage.Create("Nettoyage", "Nettoyage du système", "Nettoyage standard et approfondi avec aperçu et confirmation : en cours de développement."),
+                "Cleaning" => new CleaningPage(this),
                 "Optimization" => PlaceholderPage.Create("Optimisation", "Optimisation de Windows", "Démarrage, services, alimentation et réglages, avec avertissements et restauration : en cours de développement."),
                 _ => _storagePage
             };

@@ -196,5 +196,97 @@ static List<ScanEntry> Sample() =>
     Check("réseau : boucle locale exclue", MonitoringMath.NetworkTotal([("Intel Ethernet", 100), ("Loopback Pseudo-Interface 1", 999)]) == 100);
 }
 
+{
+    // Nettoyage : catalogue.
+    var ids = CleaningCatalog.All.Select(c => c.Id).ToList();
+    Check("nettoyage : identifiants uniques", ids.Distinct().Count() == ids.Count);
+    Check("nettoyage : catégories admin = approfondies", CleaningCatalog.All.All(c => c.RequiresAdmin == (c.Level == CleaningLevel.Deep)));
+    Check("nettoyage : racine de disque interdite", CleaningCatalog.IsForbiddenRoot(@"C:\") && CleaningCatalog.IsForbiddenRoot("C:"));
+    Check("nettoyage : profil et Windows interdits",
+        CleaningCatalog.IsForbiddenRoot(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + "\\")
+        && CleaningCatalog.IsForbiddenRoot(Environment.GetFolderPath(Environment.SpecialFolder.Windows)));
+    Check("nettoyage : dossier Temp autorisé", !CleaningCatalog.IsForbiddenRoot(Path.GetTempPath()));
+    Check("nettoyage : variable inconnue ignorée", CleaningScanner.ResolveFolders(@"%OPTIVANCE_INEXISTANTE%\Cache").Count == 0);
+    Check("nettoyage : chemin relatif refusé", CleaningScanner.ResolveFolders(@"Cache").Count == 0);
+    Check("nettoyage : Windows refusé comme dossier entier", CleaningScanner.ResolveFolders("%WINDIR%").Count == 0);
+}
+
+{
+    // Nettoyage : aperçu et suppression dans un dossier temporaire.
+    var root = Path.Combine(Path.GetTempPath(), "optivance-clean-" + Guid.NewGuid().ToString("N"));
+    var outside = Path.Combine(Path.GetTempPath(), "optivance-outside-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        var old = DateTime.UtcNow.AddDays(-3);
+        void Make(string path, int size, bool isOld)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllBytes(path, new byte[size]);
+            if (isOld)
+            {
+                File.SetCreationTimeUtc(path, old);
+                File.SetLastWriteTimeUtc(path, old);
+            }
+        }
+        Make(Path.Combine(root, "p1", "Cache", "a.bin"), 100, true);
+        Make(Path.Combine(root, "p1", "Cache", "sub", "b.bin"), 50, true);
+        Make(Path.Combine(root, "p1", "Cache", "recent.bin"), 70, false);
+        Make(Path.Combine(root, "p2", "Cache", "c.bin"), 10, true);
+        Make(Path.Combine(root, "p2", "Garder", "d.bin"), 10, true);
+        Make(Path.Combine(outside, "precieux.txt"), 5, true);
+        // Jonction dans le cache vers un dossier extérieur : ne doit être ni suivie ni vidée.
+        using (var mklink = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", $"/c mklink /J \"{Path.Combine(root, "p1", "Cache", "lien")}\" \"{outside}\"") { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true }))
+        {
+            mklink!.WaitForExit();
+        }
+        var category = new CleaningCategory("test", "Test", "", CleaningLevel.Standard, [new(Path.Combine(root, "*", "Cache"), MinimumAgeHours: 24)]);
+        var analysis = CleaningScanner.Analyze(category, DateTime.UtcNow);
+        Check("nettoyage : dossiers « * » résolus", analysis.Roots.Count == 2, string.Join(";", analysis.Roots));
+        Check("nettoyage : fichiers récents et jonction exclus", analysis.Files.Count == 3 && analysis.Bytes == 160, $"{analysis.Files.Count} / {analysis.Bytes}");
+        var outcome = CleaningScanner.Execute(analysis, DateTime.UtcNow, recycle: null);
+        Check("nettoyage : suppression", outcome.Deleted == 3 && outcome.FreedBytes == 160 && outcome.Skipped == 0, outcome.ToString());
+        Check("nettoyage : fichier récent conservé", File.Exists(Path.Combine(root, "p1", "Cache", "recent.bin")));
+        Check("nettoyage : hors catalogue conservé", File.Exists(Path.Combine(root, "p2", "Garder", "d.bin")));
+        Check("nettoyage : cible de la jonction intacte", File.Exists(Path.Combine(outside, "precieux.txt")));
+        Check("nettoyage : dossier vidé retiré, emplacement conservé", !Directory.Exists(Path.Combine(root, "p1", "Cache", "sub")) && Directory.Exists(Path.Combine(root, "p2", "Cache")));
+
+        // Fichier en cours d'utilisation : ignoré sans erreur.
+        Make(Path.Combine(root, "p2", "Cache", "ouvert.bin"), 8, true);
+        var second = CleaningScanner.Analyze(category, DateTime.UtcNow);
+        using (File.Open(Path.Combine(root, "p2", "Cache", "ouvert.bin"), FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            var locked = CleaningScanner.Execute(second, DateTime.UtcNow, recycle: null);
+            Check("nettoyage : fichier ouvert ignoré", locked.Deleted == 0 && locked.Skipped == 1, locked.ToString());
+        }
+
+        // Fichier disparu ou modifié entre l'aperçu et la suppression.
+        File.SetLastWriteTimeUtc(Path.Combine(root, "p2", "Cache", "ouvert.bin"), DateTime.UtcNow);
+        var changed = CleaningScanner.Execute(second, DateTime.UtcNow, recycle: null);
+        Check("nettoyage : fichier modifié depuis l'aperçu conservé", changed.Deleted == 0 && File.Exists(Path.Combine(root, "p2", "Cache", "ouvert.bin")));
+
+        // Corbeille : le lot est transmis tel quel.
+        Make(Path.Combine(root, "p2", "Cache", "e.bin"), 4, true);
+        List<string> recycled = [];
+        var third = CleaningScanner.Analyze(category, DateTime.UtcNow);
+        CleaningScanner.Execute(third, DateTime.UtcNow, batch => { recycled.AddRange(batch); foreach (var f in batch) File.Delete(f); });
+        Check("nettoyage : envoi à la Corbeille par lot", recycled.Count == 1 && recycled[0].EndsWith("e.bin"));
+    }
+    finally
+    {
+        var junction = Path.Combine(root, "p1", "Cache", "lien");
+        if (Directory.Exists(junction))
+        {
+            Directory.Delete(junction); // supprime la jonction, pas sa cible
+        }
+        foreach (var folder in new[] { root, outside })
+        {
+            if (Directory.Exists(folder))
+            {
+                Directory.Delete(folder, recursive: true);
+            }
+        }
+    }
+}
+
 Console.WriteLine($"{passed} réussis, {failures} échoués");
 return failures == 0 ? 0 : 1;

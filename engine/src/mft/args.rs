@@ -57,6 +57,8 @@ pub fn parse_helper_args(arguments: impl IntoIterator<Item = String>) -> Result<
 #[derive(Debug, PartialEq, Eq)]
 pub enum SessionCommand {
     Scan(char),
+    /// Nettoyage approfondi d'une catégorie du catalogue : aperçu (`run == false`) ou suppression.
+    Clean { category: &'static str, run: bool },
     Quit,
     /// Ligne non reconnue : ignorée (aucune autre commande n'est exécutable).
     Unknown,
@@ -66,6 +68,11 @@ pub fn parse_session_command(line: &str) -> SessionCommand {
     let line = line.trim_end_matches(['\r', '\n']);
     if line == "{\"v\":3,\"type\":\"quit\"}" {
         return SessionCommand::Quit;
+    }
+    for (prefix, run) in [("{\"v\":3,\"type\":\"clean-analyze\",\"category\":\"", false), ("{\"v\":3,\"type\":\"clean-run\",\"category\":\"", true)] {
+        if let Some(category) = line.strip_prefix(prefix).and_then(|rest| rest.strip_suffix("\"}")).and_then(crate::clean::category_id) {
+            return SessionCommand::Clean { category, run };
+        }
     }
     line.strip_prefix("{\"v\":3,\"type\":\"scan\",\"volume\":\"")
         .and_then(|rest| rest.strip_suffix("\"}"))
@@ -119,6 +126,21 @@ mod tests {
         assert_eq!(parse_session_command("{\"v\":3,\"type\":\"scan\",\"volume\":\"E\"}"), SessionCommand::Scan('E'));
         assert_eq!(parse_session_command("{\"v\":3,\"type\":\"scan\",\"volume\":\"e\"}\r"), SessionCommand::Scan('E'));
         assert_eq!(parse_session_command("{\"v\":3,\"type\":\"quit\"}"), SessionCommand::Quit);
+        assert_eq!(
+            parse_session_command("{\"v\":3,\"type\":\"clean-analyze\",\"category\":\"windows-temp\"}"),
+            SessionCommand::Clean { category: "windows-temp", run: false }
+        );
+        assert_eq!(
+            parse_session_command("{\"v\":3,\"type\":\"clean-run\",\"category\":\"windows-update\"}\r\n"),
+            SessionCommand::Clean { category: "windows-update", run: true }
+        );
+        for line in [
+            "{\"v\":3,\"type\":\"clean-run\",\"category\":\"user-temp\"}",
+            "{\"v\":3,\"type\":\"clean-run\",\"category\":\"C:\\\\Users\"}",
+            "{\"v\":3,\"type\":\"clean-run\",\"category\":\"windows-temp\",\"path\":\"C:\\\\\"}",
+        ] {
+            assert_eq!(parse_session_command(line), SessionCommand::Unknown, "{line:?}");
+        }
         for line in [
             "",
             "{\"v\":3,\"type\":\"scan\",\"volume\":\"C:\\\\Windows\"}",

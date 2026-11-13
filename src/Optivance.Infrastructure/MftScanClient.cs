@@ -300,6 +300,64 @@ public sealed class MftSession : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Nettoyage approfondi d'une catégorie du catalogue (identifiant seul, aucun chemin) :
+    /// aperçu si <paramref name="run"/> est faux, suppression sinon.
+    /// </summary>
+    public async Task<DeepCleanReport> CleanAsync(string categoryId, bool run, CancellationToken cancellationToken)
+    {
+        if (CleaningCatalog.Find(categoryId) is not { Level: CleaningLevel.Deep })
+        {
+            throw new ArgumentException("Catégorie de nettoyage approfondi inconnue.", nameof(categoryId));
+        }
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (!IsActive)
+            {
+                throw new ScanEngineException("session-closed", "Le composant administrateur n’est plus disponible.");
+            }
+            var command = Encoding.ASCII.GetBytes($"{{\"v\":3,\"type\":\"{(run ? "clean-run" : "clean-analyze")}\",\"category\":\"{categoryId}\"}}\n");
+            try
+            {
+                await _pipe.WriteAsync(command, CancellationToken.None);
+                await _pipe.FlushAsync(CancellationToken.None);
+                using var registration = cancellationToken.Register(() =>
+                {
+                    try
+                    {
+                        _pipe.Write("{\"v\":3,\"type\":\"cancel\"}\n"u8);
+                        _pipe.Flush();
+                    }
+                    catch (Exception exception) when (exception is IOException or ObjectDisposedException)
+                    {
+                    }
+                });
+                while (await _reader.ReadLineAsync(CancellationToken.None) is { } line)
+                {
+                    if (line.Span.StartsWith("{\"v\":3,\"type\":\"clean\""u8))
+                    {
+                        return System.Text.Json.JsonSerializer.Deserialize<DeepCleanReport>(line.Span, ReportOptions)
+                            ?? throw new InvalidDataException("Réponse de nettoyage vide.");
+                    }
+                }
+                _broken = true;
+                throw new ScanEngineException("session-closed", "Le composant administrateur a fermé le canal.");
+            }
+            catch (Exception exception) when (exception is IOException and not ScanEngineException or InvalidDataException or System.Text.Json.JsonException or ObjectDisposedException)
+            {
+                _broken = true;
+                throw new ScanEngineException("session-closed", $"Le composant administrateur ne répond plus ({exception.Message}).");
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private static readonly System.Text.Json.JsonSerializerOptions ReportOptions = new() { PropertyNameCaseInsensitive = true };
+
     public async ValueTask DisposeAsync()
     {
         try
