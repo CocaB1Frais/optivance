@@ -18,6 +18,8 @@ internal sealed class CushionTreemapView : FrameworkElement
     private static readonly Brush Background = Freeze(new SolidColorBrush(Color.FromRgb(20, 23, 30)));
 
     private StorageTree? _tree;
+    /// <summary>Arbre qui a produit `_frame` : l'image et ses identifiants ne sont jamais lus avec un autre arbre.</summary>
+    private StorageTree? _frameTree;
     private int _rootId;
     private int? _selectedId;
     private Func<int, int> _colorOf = _ => 0x808080;
@@ -46,6 +48,16 @@ internal sealed class CushionTreemapView : FrameworkElement
 
     public void SetData(StorageTree? tree, int rootId, Func<int, int> colorOf)
     {
+        if (!ReferenceEquals(tree, _tree))
+        {
+            // Nouvelle analyse : l'ancienne image (et ses identifiants) ne doit plus être dessinée.
+            _frame = null;
+            _bitmap = null;
+            _frameTree = null;
+            _selectedId = null;
+            _hovered = -1;
+            InvalidateVisual();
+        }
         _tree = tree;
         _rootId = rootId;
         _colorOf = colorOf;
@@ -103,6 +115,7 @@ internal sealed class CushionTreemapView : FrameworkElement
             bitmap.WritePixels(new Int32Rect(0, 0, width, height), frame.Pixels, width * 4, 0);
             bitmap.Freeze();
             _frame = frame;
+            _frameTree = tree;
             _bitmap = bitmap;
             _scaleX = dpi.DpiScaleX;
             _scaleY = dpi.DpiScaleY;
@@ -124,10 +137,11 @@ internal sealed class CushionTreemapView : FrameworkElement
         }
         context.DrawImage(_bitmap, new Rect(0, 0, _frame.Width / _scaleX, _frame.Height / _scaleY));
         DrawLabels(context);
-        if (_selectedId is { } selected && _tree is not null)
+        var frameTree = _frameTree;
+        if (_selectedId is { } selected && frameTree is not null && selected < frameTree.Count)
         {
             // Élément sélectionné, ou son ancêtre visible le plus proche.
-            for (var current = selected; current >= 0; current = _tree.Parent(current))
+            for (var current = selected; current >= 0 && current < frameTree.Count; current = frameTree.Parent(current))
             {
                 if (_frame.Bounds.TryGetValue(current, out var bounds))
                 {
@@ -147,7 +161,8 @@ internal sealed class CushionTreemapView : FrameworkElement
     /// <summary>Titres des dossiers (« Nom\ (taille) ») dans leurs bandeaux, coupés à la largeur.</summary>
     private void DrawLabels(DrawingContext context)
     {
-        if (_frame is null || _tree is null)
+        var tree = _frameTree;
+        if (_frame is null || tree is null)
         {
             return;
         }
@@ -159,9 +174,13 @@ internal sealed class CushionTreemapView : FrameworkElement
             {
                 continue;
             }
-            var name = label.Id == 0 ? _tree.RootPath : _tree.Name(label.Id) + "\\";
+            if (label.Id < 0 || label.Id >= tree.Count)
+            {
+                continue;
+            }
+            var name = label.Id == 0 ? tree.RootPath : tree.Name(label.Id) + "\\";
             var text = new FormattedText(
-                $"{name} ({StorageFormat.Bytes(_tree.Size(label.Id))})",
+                $"{name} ({StorageFormat.Bytes(tree.Size(label.Id))})",
                 System.Globalization.CultureInfo.CurrentCulture,
                 FlowDirection.LeftToRight,
                 LabelTypeface,
