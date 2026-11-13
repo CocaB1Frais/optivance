@@ -12,7 +12,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::HashMap;
+use crate::fasthash::FastMap as HashMap;
 use std::fmt;
 
 use super::assemble::FileSizes;
@@ -377,6 +377,8 @@ pub struct RawStats {
     pub orphan_extensions: u64,
     /// Métafichiers NTFS et leur sous-arbre ($Extend…), exclus comme le scan classique.
     pub system_excluded: u64,
+    /// Durée de la fusion finale (construction des enregistrements et des tailles), en ms.
+    pub finish_ms: f64,
 }
 
 #[derive(Debug, Default)]
@@ -390,14 +392,25 @@ pub struct RawOutput {
     pub stats: RawStats,
 }
 
-/// Accumule les enregistrements décodés, extensions comprises, dans l'ordre de lecture.
+/// Numéro d'enregistrement maximal accepté comme base d'une extension (garde-fou contre
+/// une référence corrompue qui ferait grossir le tableau des nœuds).
+const MAX_RECORD_NUMBER: u64 = 1 << 32;
+
+/// Accumule les enregistrements décodés, extensions comprises (l'ordre d'arrivée est libre).
+/// Les numéros d'enregistrement étant contigus, les nœuds sont rangés dans un tableau.
 #[derive(Default)]
 pub struct Collector {
-    nodes: HashMap<u64, Node>,
+    nodes: Vec<Option<Node>>,
     stats: RawStats,
 }
 
 impl Collector {
+    pub fn with_capacity(records: usize) -> Self {
+        let mut nodes = Vec::new();
+        nodes.resize_with(records, || None);
+        Self { nodes, stats: RawStats::default() }
+    }
+
     pub fn feed(&mut self, state: RecordState) {
         self.stats.records_read += 1;
         let parsed = match state {
@@ -410,7 +423,15 @@ impl Collector {
         };
         self.stats.in_use += 1;
         let target = if parsed.base_record != 0 { parsed.base_record } else { parsed.record_number };
-        let node = self.nodes.entry(target).or_default();
+        if target >= MAX_RECORD_NUMBER {
+            self.stats.orphan_extensions += 1;
+            return;
+        }
+        let index = target as usize;
+        if index >= self.nodes.len() {
+            self.nodes.resize_with(index + 1, || None);
+        }
+        let node = self.nodes[index].get_or_insert_with(Node::default);
         if parsed.base_record == 0 {
             node.sequence = Some(parsed.sequence);
             node.is_directory = parsed.is_directory;
@@ -434,19 +455,27 @@ impl Collector {
     }
 
     pub fn finish(mut self) -> RawOutput {
-        let root_sequence = self.nodes.get(&ROOT_RECORD).and_then(|node| node.sequence).unwrap_or(0);
-        let mut output = RawOutput { root_id: (u128::from(root_sequence) << 48) | u128::from(ROOT_RECORD), ..RawOutput::default() };
+        let root_sequence = self.nodes.get(ROOT_RECORD as usize).and_then(|node| node.as_ref()).and_then(|node| node.sequence).unwrap_or(0);
         let system = self.system_records();
-        for (&number, node) in &self.nodes {
+        let live = self.nodes.iter().filter(|node| node.is_some()).count();
+        let mut output = RawOutput {
+            root_id: (u128::from(root_sequence) << 48) | u128::from(ROOT_RECORD),
+            records: Vec::with_capacity(live + live / 8),
+            sizes: HashMap::with_capacity_and_hasher(live, Default::default()),
+            modified: HashMap::with_capacity_and_hasher(live, Default::default()),
+            ..RawOutput::default()
+        };
+        for (number, node) in std::mem::take(&mut self.nodes).into_iter().enumerate() {
+            let Some(node) = node else { continue };
             let Some(sequence) = node.sequence else {
                 self.stats.orphan_extensions += 1;
                 continue;
             };
-            if system.contains(&number) {
+            if system[number] {
                 self.stats.system_excluded += 1;
                 continue;
             }
-            let file_id = (u128::from(sequence) << 48) | u128::from(number);
+            let file_id = (u128::from(sequence) << 48) | number as u128;
             let mut attributes = node.attributes;
             if node.is_directory {
                 attributes |= FILE_ATTRIBUTE_DIRECTORY;
@@ -454,23 +483,22 @@ impl Collector {
             if node.reparse_tag.is_some() {
                 attributes |= FILE_ATTRIBUTE_REPARSE_POINT;
             }
-            let long_names: Vec<&FileNameAttr> = node.names.iter().filter(|name| name.namespace != 2).collect();
-            let names = if long_names.is_empty() { node.names.iter().collect() } else { long_names };
-            for name in &names {
-                output.records.push(UsnRecord {
-                    file_id,
-                    parent_id: u128::from(name.parent),
-                    attributes,
-                    name: name.name.clone(),
-                    major_version: 0,
-                });
+            // Noms DOS 8.3 exclus, sauf s'ils sont les seuls.
+            let has_long_name = node.names.iter().any(|name| name.namespace != 2);
+            let mut links = 0u32;
+            for name in node.names {
+                if has_long_name && name.namespace == 2 {
+                    continue;
+                }
+                links += 1;
+                output.records.push(UsnRecord { file_id, parent_id: u128::from(name.parent), attributes, name: name.name, major_version: 0 });
             }
             if !node.is_directory {
                 let data = node.data.unwrap_or_default();
                 // Fichier compressé par Windows : les données occupent le flux WofCompressedData.
                 let compressed = if node.reparse_tag == Some(REPARSE_TAG_WOF) { node.wof_allocated.unwrap_or(0) } else { 0 };
                 let allocated = data.allocated.saturating_add(compressed);
-                output.sizes.insert(file_id, FileSizes { logical: data.logical, allocated, links: names.len() as u32 });
+                output.sizes.insert(file_id, FileSizes { logical: data.logical, allocated, links });
             }
             if let Some(tag) = node.reparse_tag {
                 output.reparse_tags.insert(file_id, tag);
@@ -484,39 +512,51 @@ impl Collector {
     }
 
     /// Métafichiers (enregistrements < 16 hors racine) et tout ce qui descend d'eux.
-    fn system_records(&self) -> std::collections::HashSet<u64> {
-        let mut verdicts: HashMap<u64, bool> = HashMap::with_capacity(self.nodes.len());
-        let parent_of = |number: u64| self.nodes.get(&number).and_then(|node| node.names.first()).map(|name| name.parent & RECORD_NUMBER_MASK);
-        for &start in self.nodes.keys() {
-            let mut chain = Vec::new();
+    fn system_records(&self) -> Vec<bool> {
+        const UNKNOWN: u8 = 0;
+        const SYSTEM: u8 = 1;
+        const USER: u8 = 2;
+        let count = self.nodes.len();
+        let mut verdicts = vec![UNKNOWN; count];
+        let parent_of = |number: usize| -> Option<usize> {
+            let parent = self.nodes.get(number)?.as_ref()?.names.first()?.parent & RECORD_NUMBER_MASK;
+            usize::try_from(parent).ok()
+        };
+        let mut chain = Vec::new();
+        for start in 0..count {
+            if self.nodes[start].is_none() || verdicts[start] != UNKNOWN {
+                continue;
+            }
+            chain.clear();
             let mut current = start;
             let verdict = loop {
-                if let Some(&known) = verdicts.get(&current) {
-                    break known;
+                if current < count && verdicts[current] != UNKNOWN {
+                    break verdicts[current];
                 }
-                if current == ROOT_RECORD {
-                    break false;
+                if current as u64 == ROOT_RECORD {
+                    break USER;
                 }
-                if current < FIRST_USER_RECORD {
-                    break true;
+                if (current as u64) < FIRST_USER_RECORD {
+                    break SYSTEM;
                 }
-                if chain.len() > self.nodes.len() {
-                    break false;
+                if chain.len() > count || current >= count {
+                    break USER;
                 }
                 chain.push(current);
                 match parent_of(current) {
                     Some(parent) if parent != current => current = parent,
-                    _ => break false,
+                    _ => break USER,
                 }
             };
-            for number in chain {
-                verdicts.insert(number, verdict);
+            verdicts[start] = verdict;
+            for &number in &chain {
+                verdicts[number] = verdict;
             }
-            verdicts.entry(start).or_insert(verdict);
         }
-        verdicts.into_iter().filter(|(number, system)| *system && *number != ROOT_RECORD).map(|(number, _)| number).collect()
+        verdicts.into_iter().enumerate().map(|(number, verdict)| verdict == SYSTEM && number as u64 != ROOT_RECORD).collect()
     }
 }
+
 
 /// Taille des lectures de la `$MFT` (multiple de toute taille de cluster/enregistrement usuelle).
 const CHUNK_BYTES: u64 = 4 * 1024 * 1024;
@@ -525,8 +565,17 @@ const CHUNK_BYTES: u64 = 4 * 1024 * 1024;
 /// (offsets et longueurs multiples de la taille de secteur). `keep_going(lus, total)`
 /// permet la progression et l'annulation.
 pub fn read_mft(
-    mut read_at: impl FnMut(u64, &mut [u8]) -> Result<(), String>,
-    mut keep_going: impl FnMut(u64, u64) -> bool,
+    read_at: impl Fn(u64, &mut [u8]) -> Result<(), String> + Sync,
+    keep_going: impl FnMut(u64, u64) -> bool,
+) -> Result<RawOutput, RawError> {
+    read_mft_with(CHUNK_BYTES, read_at, keep_going)
+}
+
+/// Comme [`read_mft`], avec une taille de lecture choisie (tests).
+pub fn read_mft_with(
+    chunk_bytes: u64,
+    read_at: impl Fn(u64, &mut [u8]) -> Result<(), String> + Sync,
+    keep_going: impl FnMut(u64, u64) -> bool,
 ) -> Result<RawOutput, RawError> {
     let mut boot = vec![0u8; 4096];
     read_at(0, &mut boot).map_err(RawError::Io)?;
@@ -554,37 +603,110 @@ pub fn read_mft(
         return Err(RawError::Unsupported("$MFT creuse"));
     }
 
+    // Plan de lecture : (offset disque, octets, premier enregistrement, nombre d'enregistrements).
     let total_records = mft_bytes / record_size;
-    let chunk_capacity = (CHUNK_BYTES / geometry.cluster_size).max(1) * geometry.cluster_size;
-    let mut buffer = vec![0u8; chunk_capacity as usize];
-    let mut collector = Collector::default();
-    let mut record_number = 0u64;
+    let chunk_capacity = (chunk_bytes / geometry.cluster_size).max(1) * geometry.cluster_size;
+    let mut plan = Vec::new();
+    let mut first_record = 0u64;
     'extents: for extent in extents {
         let start = extent.lcn.expect("plages creuses refusées") * geometry.cluster_size;
         let extent_bytes = extent.clusters * geometry.cluster_size;
         let mut done = 0u64;
         while done < extent_bytes {
-            let remaining_records = total_records - record_number;
+            let remaining_records = total_records - first_record;
             if remaining_records == 0 {
                 break 'extents;
             }
             let wanted = (extent_bytes - done).min(chunk_capacity).min(round_up(remaining_records * record_size));
-            let chunk = &mut buffer[..wanted as usize];
-            read_at(start + done, chunk).map_err(RawError::Io)?;
-            for record in chunk.chunks_exact_mut(geometry.record_size) {
-                if record_number >= total_records {
-                    break;
-                }
-                collector.feed(parse_record(record, record_number, false));
-                record_number += 1;
-            }
+            let records = (wanted / record_size).min(remaining_records);
+            plan.push((start + done, wanted, first_record, records));
+            first_record += records;
             done += wanted;
-            if !keep_going(record_number, total_records) {
-                return Err(RawError::Cancelled);
-            }
         }
     }
-    Ok(collector.finish())
+    decode_in_parallel(&plan, geometry.record_size, total_records, read_at, keep_going)
+}
+
+/// Plusieurs fils lisent chacun leurs morceaux (lectures simultanées : `read_at` peut
+/// utiliser un handle par appel) puis les décodent ; le fil appelant fusionne les
+/// résultats (la fusion ne dépend pas de l'ordre d'arrivée) et décide de l'annulation.
+fn decode_in_parallel(
+    plan: &[(u64, u64, u64, u64)],
+    record_size: usize,
+    total_records: u64,
+    read_at: impl Fn(u64, &mut [u8]) -> Result<(), String> + Sync,
+    mut keep_going: impl FnMut(u64, u64) -> bool,
+) -> Result<RawOutput, RawError> {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::mpsc;
+
+    let workers = std::thread::available_parallelism().map_or(4, |count| count.get()).clamp(1, 8).min(plan.len().max(1));
+    let next = AtomicUsize::new(0);
+    let stop = AtomicBool::new(false);
+    let mut collector = Collector::with_capacity(total_records as usize);
+    std::thread::scope(|scope| {
+        let (result_sender, result_receiver) = mpsc::channel::<Result<(u64, Vec<RecordState>), RawError>>();
+        for _ in 0..workers {
+            let results = result_sender.clone();
+            let (next, stop, read_at) = (&next, &stop, &read_at);
+            scope.spawn(move || {
+                let mut buffer = Vec::new();
+                loop {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(&(offset, bytes, first, count)) = plan.get(index) else { break };
+                    buffer.resize(bytes as usize, 0);
+                    if let Err(error) = read_at(offset, &mut buffer) {
+                        let _ = results.send(Err(RawError::Io(error)));
+                        break;
+                    }
+                    let states: Vec<RecordState> = buffer
+                        .chunks_exact_mut(record_size)
+                        .take(count as usize)
+                        .enumerate()
+                        .map(|(position, record)| parse_record(record, first + position as u64, false))
+                        .filter(|state| !matches!(state, RecordState::Unused))
+                        .collect();
+                    if results.send(Ok((count, states))).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(result_sender);
+
+        let mut done = 0u64;
+        let mut outcome = Ok(());
+        while done < total_records {
+            let Ok(message) = result_receiver.recv() else { break };
+            match message {
+                Ok((count, states)) => {
+                    collector.stats.records_read += count - states.len() as u64;
+                    for state in states {
+                        collector.feed(state);
+                    }
+                    done += count;
+                    if !keep_going(done, total_records) {
+                        outcome = Err(RawError::Cancelled);
+                        break;
+                    }
+                }
+                Err(error) => {
+                    outcome = Err(error);
+                    break;
+                }
+            }
+        }
+        // Les fils s'arrêtent au prochain morceau ; le canal non borné ne les bloque jamais.
+        stop.store(true, Ordering::Relaxed);
+        outcome
+    })?;
+    let started = std::time::Instant::now();
+    let mut output = collector.finish();
+    output.stats.finish_ms = started.elapsed().as_secs_f64() * 1000.0;
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -1004,11 +1126,11 @@ mod tests {
     #[test]
     fn read_mft_follows_runs_and_decodes_every_record() {
         let volume = synthetic_volume(&[(5, root_record()), (16, simple_file(2, 5 | (5 << 48), "a.txt", 123)), (17, simple_file(1, 5 | (5 << 48), "b.txt", 456))]);
-        let mut reads = Vec::new();
+        let reads = std::sync::Mutex::new(Vec::new());
         let mut progress = Vec::new();
         let output = read_mft(
             |offset, buffer| {
-                reads.push((offset, buffer.len()));
+                reads.lock().unwrap().push((offset, buffer.len()));
                 let start = offset as usize;
                 buffer.copy_from_slice(volume.get(start..start + buffer.len()).ok_or("hors volume")?);
                 Ok(())
@@ -1024,8 +1146,40 @@ mod tests {
         assert_eq!(names, ["a.txt", "b.txt"]);
         assert_eq!(output.sizes.get(&(16u128 | (2u128 << 48))).map(|s| s.logical), Some(123));
         assert_eq!(output.stats.records_read, 20);
+        let reads = reads.into_inner().unwrap();
         assert!(reads.iter().all(|(offset, len)| offset % 512 == 0 && len % 512 == 0), "{reads:?}");
         assert_eq!(progress.last(), Some(&(20, 20)));
+    }
+
+    #[test]
+    fn read_mft_decodes_identically_when_split_in_many_chunks() {
+        let mut records = vec![(5, root_record())];
+        for number in 16..20 {
+            records.push((number, simple_file(1, 5 | (5 << 48), &format!("f{number}.bin"), number * 10)));
+        }
+        let volume = synthetic_volume(&records);
+        let mut progress = Vec::new();
+        // Un cluster (4 enregistrements) par lecture : 5 morceaux décodés en parallèle.
+        let output = read_mft_with(
+            CLUSTER as u64,
+            |offset, buffer| {
+                let start = offset as usize;
+                buffer.copy_from_slice(&volume[start..start + buffer.len()]);
+                Ok(())
+            },
+            |done, total| {
+                progress.push((done, total));
+                true
+            },
+        )
+        .unwrap();
+        let mut names: Vec<_> = output.records.iter().map(|r| r.name.clone()).filter(|n| n != ".").collect();
+        names.sort_unstable();
+        assert_eq!(names, ["f16.bin", "f17.bin", "f18.bin", "f19.bin"]);
+        assert_eq!(output.stats.records_read, 20);
+        assert_eq!(progress.len(), 5);
+        assert_eq!(progress.last(), Some(&(20, 20)));
+        assert_eq!(output.sizes.get(&(19u128 | (1u128 << 48))).map(|s| s.logical), Some(190));
     }
 
     #[test]

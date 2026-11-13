@@ -18,7 +18,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::HashMap;
+use optivance_engine::fasthash::FastMap as HashMap;
 use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
 use std::io::BufWriter;
@@ -161,7 +161,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     let root_id = u128::from(root.file_id);
 
-    let prepared = match scan_raw(&mut channel, &volume) {
+    let prepared = match scan_raw(&mut channel, &volume, letter) {
         Outcome::Ready(prepared) => prepared,
         Outcome::Cancelled => return send_interrupted_root(&mut channel, &root_name),
         Outcome::Failed(_, reason) => match scan_enum(&mut channel, &volume, &root, letter, root_id) {
@@ -179,10 +179,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Méthode principale : lecture séquentielle de la `$MFT`.
-fn scan_raw(channel: &mut Channel, volume: &File) -> Outcome {
+fn scan_raw(channel: &mut Channel, volume: &File, letter: char) -> Outcome {
+    // Un handle par lecture simultanée : Windows sérialise les lectures d'un même handle synchrone.
+    let mut handles: Vec<File> = (0..7).filter_map(|_| open_volume(letter).ok().map(File::from)).collect();
+    if let Ok(copy) = volume.try_clone() {
+        handles.push(copy);
+    }
+    let pool = std::sync::Mutex::new(handles);
     let phase = Instant::now();
     let read = read_mft(
-        |offset, buffer| read_volume_at(volume, offset, buffer),
+        |offset, buffer| {
+            let handle = pool.lock().map_err(|_| "verrou".to_string())?.pop();
+            let Some(handle) = handle else { return read_volume_at(volume, offset, buffer) };
+            let result = read_volume_at(&handle, offset, buffer);
+            if let Ok(mut free) = pool.lock() {
+                free.push(handle);
+            }
+            result
+        },
         |done, _total| {
             if done % (PROGRESS_EVERY * 8) < 4096 {
                 channel.progress(done);
@@ -196,6 +210,8 @@ fn scan_raw(channel: &mut Channel, volume: &File) -> Outcome {
         Err(RawError::Cancelled) => return Outcome::Cancelled,
         Err(error) => return Outcome::Failed("raw-failed", error.to_string()),
     };
+    // metadataMs (inutilisé par cette méthode) = durée de la fusion finale, incluse dans enumerationMs.
+    channel.profile.metadata_ns = (raw.stats.finish_ms * 1_000_000.0) as u128;
 
     let phase = Instant::now();
     let mut records = raw.records;
@@ -273,7 +289,7 @@ fn scan_enum(channel: &mut Channel, volume: &File, root: &RootDirectory, letter:
         collected,
         links,
         raw: RawStats::default(),
-        modified: HashMap::new(),
+        modified: HashMap::default(),
         fallback_reason: None,
     })
 }

@@ -37,6 +37,7 @@ public partial class StoragePage : UserControl
     private long _progressItems;
     private bool _syncing;
     private int _filterGeneration;
+    private TimeSpan _displayTime;
 
     public StoragePage()
     {
@@ -150,9 +151,17 @@ public partial class StoragePage : UserControl
         {
             var result = await _scanner.ScanAsync(target, preferMft, progress, _scanCancellation.Token);
             OverlayTitle.Text = "Préparation de l’affichage…";
-            var tree = await Task.Run(() => new StorageTree(Path.GetFullPath(target), result.Entries));
-            var files = await Task.Run(tree.FilesBySize);
+            var display = Stopwatch.StartNew();
+            var (tree, files) = await Task.Run(() =>
+            {
+                var built = new StorageTree(Path.GetFullPath(target), result.Entries);
+                return (built, built.FilesBySize());
+            });
             ShowResult(tree, files, result.Summary);
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Loaded);
+            display.Stop();
+            _displayTime = display.Elapsed;
+            Status($"{tree.RootPath} · {StorageFormat.Bytes(tree.TotalBytes)} · {StorageFormat.Count(tree.Files(0))} fichiers · analyse {StorageFormat.Duration(result.Summary.Elapsed)} ({MethodLabel(result.Summary.Method)}) + affichage {StorageFormat.Duration(display.Elapsed)} · total {StorageFormat.Duration(_scanWatch.Elapsed)}");
         }
         catch (OperationCanceledException)
         {

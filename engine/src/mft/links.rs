@@ -9,7 +9,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::{HashMap, HashSet};
+use crate::fasthash::{FastMap as HashMap, FastSet as HashSet};
 
 use super::assemble::FileSizes;
 use super::index::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT};
@@ -33,14 +33,14 @@ pub fn complete_hard_links<E>(
     mut list_names: impl FnMut(&str) -> Result<Vec<String>, E>,
 ) -> LinkStats {
     let mut stats = LinkStats::default();
-    let mut directories: HashMap<u128, (u128, String)> = HashMap::new();
-    let mut children: HashMap<(u128, String), u128> = HashMap::new();
+    let mut directories: HashMap<u128, (u128, String)> = HashMap::default();
+    let mut children: HashMap<(u128, String), u128> = HashMap::default();
     for record in records.iter().filter(|record| record.attributes & FILE_ATTRIBUTE_DIRECTORY != 0) {
         directories.entry(record.file_id).or_insert_with(|| (record.parent_id, record.name.clone()));
         children.entry((record.parent_id, record.name.clone())).or_insert(record.file_id);
     }
 
-    let mut queried = HashSet::new();
+    let mut queried = HashSet::default();
     let candidates: Vec<usize> = (0..records.len())
         .filter(|&position| {
             let record = &records[position];
