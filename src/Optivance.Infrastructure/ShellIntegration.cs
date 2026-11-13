@@ -33,4 +33,28 @@ public static class ShellIntegration
     }
 
     public static void Unregister() => Registry.CurrentUser.DeleteSubKeyTree(KeyPath, throwOnMissingSubKey: false);
+
+    private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    private const string RunValueName = "OPTIVANCE";
+
+    /// <summary>Lancement avec Windows (désactivé par défaut) : valeur du compte courant (HKCU\…\Run).</summary>
+    public static bool StartsWithWindows()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath);
+        return key?.GetValue(RunValueName) is string;
+    }
+
+    public static void SetStartWithWindows(bool enabled)
+    {
+        using var key = Registry.CurrentUser.CreateSubKey(RunKeyPath);
+        if (enabled)
+        {
+            var executable = Environment.ProcessPath ?? throw new InvalidOperationException("Chemin de l’application inconnu.");
+            key.SetValue(RunValueName, $"\"{executable}\" --tray");
+        }
+        else
+        {
+            key.DeleteValue(RunValueName, throwOnMissingValue: false);
+        }
+    }
 }

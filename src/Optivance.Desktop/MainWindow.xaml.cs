@@ -1,123 +1,153 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
+using Optivance.Core;
+using Optivance.Infrastructure;
+using Forms = System.Windows.Forms;
 
 namespace Optivance.Desktop;
 
 public partial class MainWindow : Window
 {
     private readonly StoragePage _storagePage = new();
-    private bool _allowClose;
+    private readonly Dictionary<string, UIElement> _pages = [];
+    private readonly Forms.NotifyIcon _tray;
+    private bool _exiting;
+    private bool _trayHintShown;
 
-    public MainWindow()
+    public MainWindow(MftSession? session, string? sessionError, string? scanTarget)
     {
         InitializeComponent();
         _storagePage.StatusChanged += SetStatus;
+        _storagePage.AttachSession(session, sessionError);
+        _storagePage.SessionChanged += UpdateElevationStatus;
+        _pages["Storage"] = _storagePage;
         PageHost.Content = _storagePage;
-        UpdateNavigation(StorageNavigation);
-        RefreshShellMenuButton();
-
-        // OPTIVANCE.exe --scan <chemin> : analyse lancée dès l'ouverture.
-        var arguments = Environment.GetCommandLineArgs();
-        var scanIndex = Array.IndexOf(arguments, "--scan");
-        var target = scanIndex > 0 && scanIndex + 1 < arguments.Length ? arguments[scanIndex + 1] : null;
-        Loaded += async (_, _) =>
+        Select(StorageNavigation);
+        UpdateElevationStatus();
+        if (sessionError is not null)
         {
-            // Autorisation administrateur demandée une fois, au lancement, pour toute la session.
-            await _storagePage.InitializeSessionAsync();
-            if (target is not null)
-            {
-                _storagePage.ScanAtStartup(target);
-            }
-        };
-        // Fermeture du composant élevé hors du fil d'interface (pas d'interblocage), 3 s au plus ;
-        // à défaut, il s'arrête seul à la fermeture du canal.
-        Closed += (_, _) => Task.Run(_storagePage.DisposeSessionAsync).Wait(TimeSpan.FromSeconds(3));
+            SetStatus(sessionError);
+        }
+
+        _tray = CreateTray();
+        if (scanTarget is not null)
+        {
+            Loaded += (_, _) => _storagePage.ScanAtStartup(scanTarget);
+        }
     }
+
+    public StoragePage Storage => _storagePage;
+
+    // ───────────────────────────── Navigation ─────────────────────────────
 
     private void Navigation_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not Button { Tag: string destination } button)
+        if (sender is not Button { Uid: { Length: > 0 } destination } button)
         {
             return;
         }
-
-        PageHost.Content = destination switch
+        if (!_pages.TryGetValue(destination, out var page))
         {
-            "Storage" => _storagePage,
-            "Monitoring" => new MonitoringPage(),
-            "Cleaning" => PlaceholderPage.Create("Cleaning", "Le module de nettoyage sera livré après Monitoring.", "Aucune suppression n’est disponible dans ce prototype."),
-            "Optimization" => PlaceholderPage.Create("Optimization", "Optimisation Windows", "La lecture des processus/services et les actions réversibles ne sont pas encore implémentées."),
-            "History" => PlaceholderPage.Create("History", "Historique des analyses", "Le stockage persistant et les exports ne sont pas implémentés dans V0.1."),
-            "Settings" => PlaceholderPage.Create("Settings", "Paramètres", "Les préférences et l’intégration facultative à Explorer ne sont pas implémentées dans V0.1."),
-            _ => _storagePage
-        };
-        UpdateNavigation(button);
-    }
-
-    private void UpdateNavigation(Button selected)
-    {
-        foreach (var button in FindVisualChildren<Button>(this).Where(button => button.Tag is string))
-        {
-            button.Background = button == selected ? System.Windows.Media.Brushes.DarkSlateGray : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(37, 45, 58));
-            button.BorderBrush = button == selected ? (System.Windows.Media.Brush)FindResource("AccentBrush") : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(48, 59, 75));
+            page = destination switch
+            {
+                "Settings" => new SettingsPage(this),
+                "History" => new HistoryPage(),
+                "Monitoring" => PlaceholderPage.Create("Monitoring", "Surveillance du système", "Températures, processeur, carte graphique, mémoire, disques, réseau et widget : en cours de développement."),
+                "Cleaning" => PlaceholderPage.Create("Nettoyage", "Nettoyage du système", "Nettoyage standard et approfondi avec aperçu et confirmation : en cours de développement."),
+                "Optimization" => PlaceholderPage.Create("Optimisation", "Optimisation de Windows", "Démarrage, services, alimentation et réglages, avec avertissements et restauration : en cours de développement."),
+                _ => _storagePage
+            };
+            _pages[destination] = page;
         }
+        PageHost.Content = page;
+        Select(button);
     }
 
-    private static IEnumerable<T> FindVisualChildren<T>(DependencyObject parent) where T : DependencyObject
+    private void Select(Button selected)
     {
-        for (var index = 0; index < System.Windows.Media.VisualTreeHelper.GetChildrenCount(parent); index++)
+        foreach (var child in Navigation.Children.OfType<Button>())
         {
-            var child = System.Windows.Media.VisualTreeHelper.GetChild(parent, index);
-            if (child is T typed)
-            {
-                yield return typed;
-            }
-            foreach (var descendant in FindVisualChildren<T>(child))
-            {
-                yield return descendant;
-            }
+            child.Tag = child == selected ? "Selected" : null;
         }
     }
 
     private void SetStatus(string message) => GlobalStatus.Text = message;
 
-    private void RefreshShellMenuButton() =>
-        ShellMenuText.Text = Optivance.Infrastructure.ShellIntegration.IsRegistered() ? "✓  Dans le clic droit du Bureau (retirer)" : "＋  Ajouter au clic droit du Bureau";
+    private void UpdateElevationStatus() =>
+        ElevationStatus.Text = _storagePage.HasActiveSession
+            ? "Hors ligne · analyse rapide autorisée pour cette session"
+            : "Hors ligne · analyse rapide non autorisée (analyse standard)";
 
-    private void ShellMenuButton_Click(object sender, RoutedEventArgs e)
+    // ───────────────────────────── Zone de notification ─────────────────────────────
+
+    private Forms.NotifyIcon CreateTray()
     {
-        try
+        var menu = new Forms.ContextMenuStrip();
+        menu.Items.Add("Ouvrir OPTIVANCE", null, (_, _) => ShowFromTray());
+        menu.Items.Add(new Forms.ToolStripSeparator());
+        menu.Items.Add("Quitter", null, (_, _) => ExitApplication());
+        var icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath!) ?? System.Drawing.SystemIcons.Application;
+        var tray = new Forms.NotifyIcon { Icon = icon, Text = "OPTIVANCE", ContextMenuStrip = menu, Visible = true };
+        tray.MouseClick += (_, e) =>
         {
-            if (Optivance.Infrastructure.ShellIntegration.IsRegistered())
+            if (e.Button == Forms.MouseButtons.Left)
             {
-                Optivance.Infrastructure.ShellIntegration.Unregister();
-                SetStatus("OPTIVANCE retiré du clic droit du Bureau.");
+                ShowFromTray();
             }
-            else
-            {
-                Optivance.Infrastructure.ShellIntegration.Register();
-                SetStatus("OPTIVANCE ajouté au clic droit du Bureau (sous Windows 11 : aussi dans « Afficher plus d’options »).");
-            }
-        }
-        catch (Exception exception) when (exception is UnauthorizedAccessException or System.Security.SecurityException or System.IO.IOException or InvalidOperationException)
+        };
+        return tray;
+    }
+
+    public void ShowFromTray()
+    {
+        Show();
+        if (WindowState == WindowState.Minimized)
         {
-            SetStatus($"Modification du clic droit impossible : {exception.Message}");
+            WindowState = WindowState.Maximized;
         }
-        RefreshShellMenuButton();
+        Activate();
+        Topmost = true;
+        Topmost = false;
+        Focus();
+    }
+
+    public void ExitApplication()
+    {
+        _exiting = true;
+        Close();
     }
 
     private async void Window_Closing(object? sender, CancelEventArgs e)
     {
-        if (_allowClose || !_storagePage.IsScanning)
+        if (!_exiting && App.Settings.CloseToTray)
         {
+            // Fermer = masquer : OPTIVANCE reste dans la zone de notification (widget, raccourcis).
+            e.Cancel = true;
+            Hide();
+            if (!_trayHintShown)
+            {
+                _trayHintShown = true;
+                _tray.ShowBalloonTip(3000, "OPTIVANCE reste actif", "OPTIVANCE continue dans la zone de notification. Clic droit sur l’icône → Quitter pour l’arrêter.", Forms.ToolTipIcon.Info);
+            }
             return;
         }
 
-        e.Cancel = true;
-        SetStatus("Annulation de l’analyse avant fermeture…");
-        await _storagePage.CancelAndWaitAsync();
-        _allowClose = true;
-        Close();
+        if (_storagePage.IsScanning)
+        {
+            e.Cancel = true;
+            SetStatus("Annulation de l’analyse avant fermeture…");
+            await _storagePage.CancelAndWaitAsync();
+            _exiting = true;
+            Close();
+            return;
+        }
+
+        _tray.Visible = false;
+        _tray.Dispose();
+        // Fermeture du composant élevé hors du fil d'interface (pas d'interblocage), 3 s au plus.
+        Task.Run(_storagePage.DisposeSessionAsync).Wait(TimeSpan.FromSeconds(3));
+        App.History.Add(HistoryCategory.Application, "Fermeture", "OPTIVANCE", "Application quittée");
+        Application.Current.Shutdown();
     }
 }

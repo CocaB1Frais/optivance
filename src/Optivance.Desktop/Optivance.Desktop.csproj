@@ -8,6 +8,9 @@
     <Nullable>enable</Nullable>
     <AssemblyName>OPTIVANCE</AssemblyName>
     <RootNamespace>Optivance.Desktop</RootNamespace>
+    <!-- Zone de notification (NotifyIcon) : fait partie de .NET Windows Desktop, aucune dépendance tierce. -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>Assets\optivance.ico</ApplicationIcon>
   </PropertyGroup>
   <!-- Moteur Rust. Cargo lit engine/.cargo/config.toml depuis son répertoire courant
        (pas depuis manifest-path) : il doit donc être lancé depuis engine/ pour appliquer
@@ -26,6 +29,13 @@
     <CargoExe Condition="'$(CargoExe)' == '' and Exists('$(USERPROFILE)\.cargo\bin\cargo.exe')">$(USERPROFILE)\.cargo\bin\cargo.exe</CargoExe>
     <CargoExe Condition="'$(CargoExe)' == ''">cargo</CargoExe>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- WinForms ne sert qu'à la zone de notification : pas d'espaces de noms implicites (conflits avec WPF). -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+    <Resource Include="Assets\logo.png" />
+    <Resource Include="Assets\icon.png" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Optivance.Core\Optivance.Core.csproj" />
     <ProjectReference Include="..\Optivance.Infrastructure\Optivance.Infrastructure.csproj" />

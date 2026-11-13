@@ -86,7 +86,7 @@ public partial class StoragePage : UserControl
     {
         if (DriveSelector.SelectedItem is DriveItem drive)
         {
-            StartScan(drive.Root, preferMft: true);
+            StartScan(drive.Root, preferMft: App.Settings.PreferFastScan);
         }
     }
 
@@ -95,7 +95,7 @@ public partial class StoragePage : UserControl
         var dialog = new Microsoft.Win32.OpenFolderDialog { Title = "Choisir le dossier à analyser" };
         if (dialog.ShowDialog(Window.GetWindow(this)) == true)
         {
-            StartScan(dialog.FolderName, preferMft: true);
+            StartScan(dialog.FolderName, preferMft: App.Settings.PreferFastScan);
         }
     }
 
@@ -202,7 +202,23 @@ public partial class StoragePage : UserControl
             EnableFastButton.Visibility = Visibility.Visible;
             Status(exception.Message);
         }
+        SessionChanged?.Invoke();
     }
+
+    /// <summary>Composant de session obtenu au lancement (UAC demandée avant la fenêtre).</summary>
+    public void AttachSession(MftSession? session, string? error)
+    {
+        _scanner.Session = session;
+        EnableFastButton.Visibility = session is null && MftScanClient.IsHelperPresent ? Visibility.Visible : Visibility.Collapsed;
+        if (error is not null)
+        {
+            Status(error);
+        }
+    }
+
+    public bool HasActiveSession => _scanner.Session is { IsActive: true };
+
+    public event Action? SessionChanged;
 
     public async Task DisposeSessionAsync()
     {
@@ -221,7 +237,7 @@ public partial class StoragePage : UserControl
         var full = Path.GetFullPath(target);
         if (Directory.Exists(full))
         {
-            StartScan(full, preferMft: true);
+            StartScan(full, preferMft: App.Settings.PreferFastScan);
         }
         else
         {
@@ -891,9 +907,11 @@ public partial class StoragePage : UserControl
         {
             details.Add(("Remarque", "Lien physique supplémentaire : le supprimer ne libère pas d’espace."));
         }
+        // La suppression définitive est toujours confirmée ; la Corbeille selon les paramètres.
         var confirmed = permanent
             ? ConfirmDialog.Ask(Window.GetWindow(this), "Supprimer définitivement ?", "Cet élément sera effacé sans passer par la Corbeille. Cette action est irréversible.", details, "Supprimer définitivement", danger: true)
-            : ConfirmDialog.Ask(Window.GetWindow(this), "Mettre à la Corbeille ?", "L’élément sera déplacé dans la Corbeille ; vous pourrez le restaurer depuis celle-ci.", details, "Mettre à la Corbeille", danger: false);
+            : !App.Settings.ConfirmDeletion
+              || ConfirmDialog.Ask(Window.GetWindow(this), "Mettre à la Corbeille ?", "L’élément sera déplacé dans la Corbeille ; vous pourrez le restaurer depuis celle-ci.", details, "Mettre à la Corbeille", danger: false);
         if (!confirmed)
         {
             return;
@@ -910,13 +928,17 @@ public partial class StoragePage : UserControl
         {
             Mouse.OverrideCursor = null;
         }
+        var size = StorageFormat.Bytes(tree.Size(id));
+        var action = permanent ? "Suppression définitive" : "Mise à la Corbeille";
         if (error is not null)
         {
+            App.History.Add(HistoryCategory.Storage, action, path, error, success: false);
             Status("Suppression impossible.");
             ConfirmDialog.Inform(Window.GetWindow(this), "Suppression impossible", $"{path}\n\n{error}");
             return;
         }
 
+        App.History.Add(HistoryCategory.Storage, action, path, isDirectory ? $"Dossier, {size}" : size);
         var parent = tree.Parent(id);
         var freed = tree.Remove(id);
         _allFiles = await Task.Run(tree.FilesBySize);

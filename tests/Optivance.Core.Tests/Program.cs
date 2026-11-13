@@ -143,5 +143,41 @@ static List<ScanEntry> Sample() =>
     }
 }
 
+{
+    // Paramètres et historique : fichiers locaux temporaires.
+    var folder = Path.Combine(Path.GetTempPath(), $"optivance-settings-test-{Environment.ProcessId}-{Environment.TickCount64}");
+    try
+    {
+        var settingsPath = Path.Combine(folder, "settings.json");
+        var settings = new AppSettings { WidgetOpacity = 5, WidgetToggleHotkey = "Ctrl+Shift+F9", CloseToTray = false };
+        settings.Save(settingsPath);
+        var reloaded = AppSettings.Load(settingsPath);
+        Check("paramètres : relus", reloaded.WidgetToggleHotkey == "Ctrl+Shift+F9" && !reloaded.CloseToTray);
+        Check("paramètres : bornés", reloaded.WidgetOpacity == 1.0, reloaded.WidgetOpacity.ToString());
+        File.WriteAllText(settingsPath, "{ illisible");
+        Check("paramètres : fichier illisible → défauts", AppSettings.Load(settingsPath).CloseToTray);
+
+        var history = new HistoryLog(Path.Combine(folder, "history.jsonl"));
+        HistoryEntry? notified = null;
+        history.Added += entry => notified = entry;
+        history.Add(HistoryCategory.Storage, "Corbeille", @"C:\x.bin", "4 Ko");
+        history.Add(HistoryCategory.Cleaning, "Nettoyage", "Temporaires", "12 Mo", success: false);
+        var entries = history.Load(retentionDays: 30);
+        Check("historique : plus récent d'abord", entries.Count == 2 && entries[0].Category == HistoryCategory.Cleaning && !entries[0].Success);
+        Check("historique : notification", notified?.Action == "Nettoyage");
+        File.AppendAllText(Path.Combine(folder, "history.jsonl"), "pas du json" + Environment.NewLine);
+        Check("historique : ligne corrompue ignorée", history.Load(30).Count == 2);
+        history.Clear();
+        Check("historique : effacé", history.Load(30).Count == 0);
+    }
+    finally
+    {
+        if (Directory.Exists(folder))
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+}
+
 Console.WriteLine($"{passed} réussis, {failures} échoués");
 return failures == 0 ? 0 : 1;
