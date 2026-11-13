@@ -30,6 +30,10 @@ if (args.Length > 1)
 var latestProgress = new ProgressSnapshot();
 var progress = new Progress<ScanUpdate>(update =>
 {
+    if (update is ScanWarning warning)
+    {
+        Console.WriteLine($"warning={warning.Message}");
+    }
     if (update is ScanProgress scanProgress)
     {
         latestProgress = new ProgressSnapshot(scanProgress.VisitedFiles, scanProgress.VisitedDirectories);

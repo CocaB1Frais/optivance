@@ -36,6 +36,10 @@
             <Button Content="⚙   Settings" Tag="Settings" Click="Navigation_Click" HorizontalContentAlignment="Left" Margin="0,2" />
           </StackPanel>
           <StackPanel DockPanel.Dock="Bottom" Margin="9,0,8,4">
+            <Button x:Name="ShellMenuButton" Click="ShellMenuButton_Click" HorizontalContentAlignment="Left" Margin="-9,0,-8,12" Padding="10,7"
+                    ToolTip="Ajoute ou retire « OPTIVANCE » du menu clic droit du Bureau (registre de votre compte, sans droits administrateur)">
+              <TextBlock x:Name="ShellMenuText" FontSize="11" TextWrapping="Wrap" />
+            </Button>
             <TextBlock Text="VERSION" FontSize="9" Foreground="{StaticResource MutedTextBrush}" />
             <TextBlock Text="V1 · Storage (MFT directe)" FontSize="11" Margin="0,5,0,0" />
           </StackPanel>
@@ -47,7 +51,7 @@
       <Grid Margin="20,0">
         <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
         <TextBlock x:Name="GlobalStatus" Text="Prêt · aucune analyse en cours" VerticalAlignment="Center" FontSize="10" Foreground="{StaticResource MutedTextBrush}" />
-        <TextBlock Grid.Column="1" Text="Hors ligne · sans élévation au démarrage · autorisation demandée à chaque analyse rapide" VerticalAlignment="Center" FontSize="10" Foreground="{StaticResource MutedTextBrush}" />
+        <TextBlock Grid.Column="1" Text="Hors ligne · interface en mode normal · analyse rapide autorisée une fois par session" VerticalAlignment="Center" FontSize="10" Foreground="{StaticResource MutedTextBrush}" />
       </Grid>
     </Border>
   </Grid>

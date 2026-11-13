@@ -27,16 +27,17 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use optivance_engine::mft::args::parse_helper_args;
+use optivance_engine::mft::args::{parse_helper_args, parse_session_command, HelperMode, SessionCommand};
 use optivance_engine::mft::assemble::{assemble, FileSizes, SizeStats};
 use optivance_engine::mft::enumerate::{enumerate_with, EnumError, ERROR_ACCESS_DENIED};
 use optivance_engine::mft::index::{build_index, Diagnostics};
 use optivance_engine::mft::links::{complete_hard_links, LinkStats};
 use optivance_engine::mft::metadata::{collect, Collected, FileInfo};
-use optivance_engine::mft::raw::{read_mft, RawError, RawStats};
+use optivance_engine::mft::raw::{read_mft, read_mft_by_records, RawError, RawStats};
 use optivance_engine::mft::records::UsnRecord;
 use optivance_engine::mft::volume::{
-    fetch_mft_chunk, filesystem_name, hard_link_names, open_root, open_volume, query_file, read_volume_at,
+    fetch_file_record, fetch_mft_chunk, filesystem_name, hard_link_names, ntfs_geometry, open_root, open_volume, open_volume_unbuffered, query_file,
+    read_volume_at,
     restrict_dll_search_to_system32, RootDirectory,
 };
 use optivance_engine::protocol::{
@@ -88,6 +89,14 @@ impl Channel {
         let _ = send_progress(&mut self.writer, &mut self.profile, &counters, elapsed);
     }
 
+    /// Nouvelle analyse dans la même session : compteurs, annulation et chronomètre remis à zéro.
+    fn reset(&mut self) {
+        self.profile = Profile::default();
+        self.cancelled.store(false, Ordering::Relaxed);
+        self.started = Instant::now();
+        self.calls = 0;
+    }
+
     fn fail(&mut self, code: &str, message: &str) -> std::io::Result<()> {
         send_error_with_code(&mut self.writer, &mut self.profile, message, Some(code))
     }
@@ -124,7 +133,6 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let started = Instant::now();
     let args = parse_helper_args(std::env::args().skip(1))?;
     let pipe = OpenOptions::new()
         .read(true)
@@ -136,12 +144,58 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         profile: Profile::default(),
         cancelled: AtomicBool::new(false),
         commands: Vec::with_capacity(64),
-        started,
+        started: Instant::now(),
         calls: 0,
     };
     send(&mut channel.writer, &mut channel.profile, HELLO)?;
 
-    let letter = args.volume;
+    match args.mode {
+        HelperMode::Single(letter) => scan_volume(&mut channel, letter),
+        HelperMode::Session => {
+            // Composant de session : attend les commandes jusqu'à la fermeture de l'interface.
+            while let Some(line) = next_command(&mut channel)? {
+                match parse_session_command(&line) {
+                    SessionCommand::Scan(letter) => {
+                        channel.reset();
+                        scan_volume(&mut channel, letter)?;
+                    }
+                    SessionCommand::Quit => break,
+                    SessionCommand::Unknown => {}
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Lit la prochaine ligne de commande (bloquant). `None` quand l'interface a fermé le canal.
+fn next_command(channel: &mut Channel) -> std::io::Result<Option<String>> {
+    use std::io::Read;
+    const MAX_COMMAND_BYTES: usize = 4096;
+    loop {
+        if let Some(newline) = channel.commands.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = channel.commands.drain(..=newline).collect();
+            return Ok(Some(String::from_utf8_lossy(&line).into_owned()));
+        }
+        if channel.commands.len() > MAX_COMMAND_BYTES {
+            channel.commands.clear();
+        }
+        let mut buffer = [0u8; 512];
+        let read = match (&*channel.writer.get_ref()).read(&mut buffer) {
+            Ok(read) => read,
+            // Canal fermé ou rompu : fin normale de la session.
+            Err(error) if matches!(error.raw_os_error(), Some(109 | 232 | 233)) => 0,
+            Err(error) => return Err(error),
+        };
+        if read == 0 {
+            return Ok(None);
+        }
+        channel.commands.extend_from_slice(&buffer[..read]);
+    }
+}
+
+/// Une analyse complète d'un volume ; les erreurs d'analyse sont envoyées à l'interface.
+fn scan_volume(channel: &mut Channel, letter: char) -> Result<(), Box<dyn std::error::Error>> {
     let root_name = format!("{letter}:\\");
     match filesystem_name(letter) {
         Ok(name) if name == "NTFS" => {}
@@ -161,49 +215,50 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     let root_id = u128::from(root.file_id);
 
-    let prepared = match scan_raw(&mut channel, &volume, letter) {
+    let prepared = match scan_raw(channel, &volume, letter) {
         Outcome::Ready(prepared) => prepared,
-        Outcome::Cancelled => return send_interrupted_root(&mut channel, &root_name),
-        Outcome::Failed(_, reason) => match scan_enum(&mut channel, &volume, &root, letter, root_id) {
+        Outcome::Cancelled => return send_interrupted_root(channel, &root_name),
+        Outcome::Failed(_, reason) => match scan_enum(channel, &volume, &root, letter, root_id) {
             Outcome::Ready(mut prepared) => {
                 prepared.fallback_reason = Some(reason);
                 prepared
             }
-            Outcome::Cancelled => return send_interrupted_root(&mut channel, &root_name),
+            Outcome::Cancelled => return send_interrupted_root(channel, &root_name),
             Outcome::Failed(code, message) => return Ok(channel.fail(code, &message)?),
         },
     };
     drop(volume);
     drop(root);
-    finish(&mut channel, prepared, root_id, &root_name)
+    finish(channel, prepared, root_id, &root_name)
 }
 
-/// Méthode principale : lecture séquentielle de la `$MFT`.
+
+/// Méthode principale : lecture séquentielle de la `$MFT` (un seul fil de lecture, décodage parallèle).
 fn scan_raw(channel: &mut Channel, volume: &File, letter: char) -> Outcome {
-    // Un handle par lecture simultanée : Windows sérialise les lectures d'un même handle synchrone.
-    let mut handles: Vec<File> = (0..7).filter_map(|_| open_volume(letter).ok().map(File::from)).collect();
-    if let Ok(copy) = volume.try_clone() {
-        handles.push(copy);
-    }
-    let pool = std::sync::Mutex::new(handles);
     let phase = Instant::now();
-    let read = read_mft(
-        |offset, buffer| {
-            let handle = pool.lock().map_err(|_| "verrou".to_string())?.pop();
-            let Some(handle) = handle else { return read_volume_at(volume, offset, buffer) };
-            let result = read_volume_at(&handle, offset, buffer);
-            if let Ok(mut free) = pool.lock() {
-                free.push(handle);
-            }
-            result
-        },
-        |done, _total| {
-            if done % (PROGRESS_EVERY * 8) < 4096 {
-                channel.progress(done);
-            }
-            channel.poll()
-        },
-    );
+    // Lecture brute sans cache quand c'est possible (disques 4K natifs) ; sinon le handle normal.
+    let unbuffered = open_volume_unbuffered(letter).ok().map(File::from);
+    let reader = unbuffered.as_ref().unwrap_or(volume);
+    let mut report = |done: u64, _total: u64| {
+        if done % (PROGRESS_EVERY * 8) < 4096 {
+            channel.progress(done);
+        }
+        channel.poll()
+    };
+    let mut read = read_mft(|offset, buffer| read_volume_at(reader, offset, buffer), &mut report);
+    if let Err(RawError::Io(volume_error)) = &read {
+        // Lecture brute du volume refusée (constaté sur un disque dur : erreur 50) : mêmes
+        // enregistrements, demandés un par un au système de fichiers (FSCTL_GET_NTFS_FILE_RECORD).
+        read = match ntfs_geometry(volume) {
+            Ok(geometry) if geometry.record_size > 0 => read_mft_by_records(
+                geometry.valid_bytes / geometry.record_size as u64,
+                |number, buffer| fetch_file_record(volume, number, buffer),
+                &mut report,
+            ),
+            Ok(_) => Err(RawError::Io(format!("{volume_error} ; géométrie NTFS invalide"))),
+            Err(error) => Err(RawError::Io(format!("{volume_error} ; géométrie NTFS : {error}"))),
+        };
+    }
     channel.profile.enumeration_ns = phase.elapsed().as_nanos();
     let raw = match read {
         Ok(raw) => raw,

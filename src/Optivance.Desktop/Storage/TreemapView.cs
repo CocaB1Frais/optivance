@@ -93,7 +93,8 @@ internal sealed class CushionTreemapView : FrameworkElement
             var root = _rootId;
             var colorOf = _colorOf;
             var started = System.Diagnostics.Stopwatch.StartNew();
-            var frame = await Task.Run(() => CushionTreemap.Render(tree, root, width, height, colorOf, cancellation.Token), cancellation.Token);
+            var header = (int)Math.Round(HeaderHeight * dpi.DpiScaleY);
+            var frame = await Task.Run(() => CushionTreemap.Render(tree, root, width, height, colorOf, cancellation.Token, header), cancellation.Token);
             if (generation != _generation)
             {
                 return;
@@ -122,6 +123,7 @@ internal sealed class CushionTreemapView : FrameworkElement
             return;
         }
         context.DrawImage(_bitmap, new Rect(0, 0, _frame.Width / _scaleX, _frame.Height / _scaleY));
+        DrawLabels(context);
         if (_selectedId is { } selected && _tree is not null)
         {
             // Élément sélectionné, ou son ancêtre visible le plus proche.
@@ -141,6 +143,43 @@ internal sealed class CushionTreemapView : FrameworkElement
             }
         }
     }
+
+    /// <summary>Titres des dossiers (« Nom\ (taille) ») dans leurs bandeaux, coupés à la largeur.</summary>
+    private void DrawLabels(DrawingContext context)
+    {
+        if (_frame is null || _tree is null)
+        {
+            return;
+        }
+        var pixelsPerDip = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+        foreach (var label in _frame.Labels)
+        {
+            var bounds = new Rect(label.Bounds.X / _scaleX, label.Bounds.Y / _scaleY, label.Bounds.Width / _scaleX, label.Bounds.Height / _scaleY);
+            if (bounds.Width < 30)
+            {
+                continue;
+            }
+            var name = label.Id == 0 ? _tree.RootPath : _tree.Name(label.Id) + "\\";
+            var text = new FormattedText(
+                $"{name} ({StorageFormat.Bytes(_tree.Size(label.Id))})",
+                System.Globalization.CultureInfo.CurrentCulture,
+                FlowDirection.LeftToRight,
+                LabelTypeface,
+                10.5,
+                LabelBrush,
+                pixelsPerDip)
+            {
+                MaxTextWidth = Math.Max(1, bounds.Width - 8),
+                MaxLineCount = 1,
+                Trimming = TextTrimming.CharacterEllipsis
+            };
+            context.DrawText(text, new Point(bounds.X + 4, bounds.Y + Math.Max(0, (bounds.Height - text.Height) / 2)));
+        }
+    }
+
+    private const double HeaderHeight = 15;
+    private static readonly Typeface LabelTypeface = new(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
+    private static readonly Brush LabelBrush = Freeze(new SolidColorBrush(Color.FromRgb(226, 232, 240)));
 
     private int Hit(MouseEventArgs e)
     {

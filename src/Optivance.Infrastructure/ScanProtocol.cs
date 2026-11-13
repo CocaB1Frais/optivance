@@ -269,8 +269,27 @@ internal sealed class ScanSession
         IProgress<ScanUpdate>? progress,
         CancellationToken cancellationToken)
     {
+        return await RunUntilTerminalAsync(new PipeLineReader(pipe), pipe, progress, cancellationToken);
+    }
+
+    private static readonly byte[][] TerminalPrefixes =
+    [
+        Encoding.ASCII.GetBytes("{\"v\":3,\"type\":\"completed\""),
+        Encoding.ASCII.GetBytes("{\"v\":3,\"type\":\"interrupted\""),
+        Encoding.ASCII.GetBytes("{\"v\":3,\"type\":\"error\"")
+    ];
+
+    /// <summary>
+    /// Lit les messages d'une analyse jusqu'au message final (terminé, interrompu, erreur), sans
+    /// lire au-delà : le même canal peut servir à l'analyse suivante (composant de session).
+    /// </summary>
+    public static async Task<(ScanSession Session, ScanSummary? Summary)> RunUntilTerminalAsync(
+        PipeLineReader reader,
+        Stream pipe,
+        IProgress<ScanUpdate>? progress,
+        CancellationToken cancellationToken)
+    {
         var session = new ScanSession();
-        var reader = new PipeLineReader(pipe);
         // Annulation écrite directement sur le flux : aucun tampon à vider quand le moteur a
         // déjà fermé le canal.
         using var cancelRegistration = cancellationToken.Register(() => _ = SendCancelAsync(pipe));
@@ -287,9 +306,15 @@ internal sealed class ScanSession
             {
                 while (await reader.ReadLineAsync(CancellationToken.None) is { } line)
                 {
-                    if (!line.IsEmpty)
+                    if (line.IsEmpty)
                     {
-                        await lines.Writer.WriteAsync(line.ToArray());
+                        continue;
+                    }
+                    var bytes = line.ToArray();
+                    await lines.Writer.WriteAsync(bytes);
+                    if (TerminalPrefixes.Any(prefix => bytes.AsSpan().StartsWith(prefix)))
+                    {
+                        break;
                     }
                 }
                 lines.Writer.TryComplete();

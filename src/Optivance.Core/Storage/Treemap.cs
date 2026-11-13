@@ -98,6 +98,9 @@ public static class Squarify
     }
 }
 
+/// <summary>Bandeau de titre d'un dossier dans la treemap (pixels).</summary>
+public readonly record struct TreemapLabel(int Id, RectD Bounds);
+
 /// <summary>Image calculée : pixels BGRA32, propriétaire de chaque pixel, rectangles des éléments dessinés.</summary>
 public sealed class TreemapFrame(int width, int height)
 {
@@ -107,6 +110,8 @@ public sealed class TreemapFrame(int width, int height)
     /// <summary>Identifiant de l'élément visible à chaque pixel (-1 : aucun).</summary>
     public int[] Owners { get; } = CreateOwners(width * height);
     public Dictionary<int, RectD> Bounds { get; } = [];
+    /// <summary>Bandeaux de titre des dossiers (texte dessiné par l'interface).</summary>
+    public List<TreemapLabel> Labels { get; } = [];
 
     public int HitTest(int x, int y) =>
         x < 0 || y < 0 || x >= Width || y >= Height ? -1 : Owners[y * Width + x];
@@ -133,7 +138,8 @@ public static class CushionTreemap
     private static readonly double LightX = -0.09759, LightY = -0.19518, LightZ = 0.97590;
 
     /// <param name="colorOf">Couleur RGB (0xRRGGBB) d'un fichier ; les dossiers trop petits pour être détaillés sont gris.</param>
-    public static TreemapFrame Render(StorageTree tree, int rootId, int width, int height, Func<int, int> colorOf, CancellationToken cancellationToken)
+    /// <param name="headerHeight">Hauteur en pixels du bandeau de titre des dossiers (0 : aucun).</param>
+    public static TreemapFrame Render(StorageTree tree, int rootId, int width, int height, Func<int, int> colorOf, CancellationToken cancellationToken, int headerHeight = 0)
     {
         var frame = new TreemapFrame(Math.Max(1, width), Math.Max(1, height));
         Array.Fill(frame.Pixels, unchecked((int)0xFF14171E));
@@ -142,11 +148,11 @@ public static class CushionTreemap
             return frame;
         }
         var surface = new double[4];
-        Node(tree, rootId, new RectD(0, 0, width, height), InitialHeight, surface, frame, colorOf, cancellationToken);
+        Node(tree, rootId, new RectD(0, 0, width, height), InitialHeight, surface, frame, colorOf, headerHeight, cancellationToken);
         return frame;
     }
 
-    private static void Node(StorageTree tree, int id, RectD rect, double ridge, double[] parentSurface, TreemapFrame frame, Func<int, int> colorOf, CancellationToken cancellationToken)
+    private static void Node(StorageTree tree, int id, RectD rect, double ridge, double[] parentSurface, TreemapFrame frame, Func<int, int> colorOf, int headerHeight, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         frame.Bounds[id] = rect;
@@ -170,8 +176,11 @@ public static class CushionTreemap
             }
             if (children.Count > 0)
             {
-                // Réserve fine pour lire les bords des dossiers.
-                var inner = rect.Width > 8 && rect.Height > 8 ? new RectD(rect.X + 1, rect.Y + 1, rect.Width - 2, rect.Height - 2) : rect;
+                // Dossier assez grand : bandeau de titre et cadre (style WizTree) ; sinon, réserve fine.
+                var titled = headerHeight > 0 && rect.Width >= 48 && rect.Height >= headerHeight * 2 + 6;
+                var inner = titled
+                    ? new RectD(rect.X + 2, rect.Y + headerHeight, rect.Width - 4, rect.Height - headerHeight - 2)
+                    : rect.Width > 8 && rect.Height > 8 ? new RectD(rect.X + 1, rect.Y + 1, rect.Width - 2, rect.Height - 2) : rect;
                 var rects = new RectD[children.Count];
                 Squarify.Layout(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(weights), inner, rects);
                 var drawnArea = 0d;
@@ -182,18 +191,67 @@ public static class CushionTreemap
                         continue;
                     }
                     drawnArea += rects[index].Area;
-                    Node(tree, children[index], rects[index], ridge * HeightFactor, surface, frame, colorOf, cancellationToken);
+                    Node(tree, children[index], rects[index], ridge * HeightFactor, surface, frame, colorOf, headerHeight, cancellationToken);
                 }
                 if (drawnArea > 0)
                 {
-                    // Le cadre (et la poussière d'éléments minuscules) reste au dossier.
-                    Fill(frame, rect, surface, 0x3A4150, id, onlyEmpty: true);
+                    if (titled)
+                    {
+                        // Marges et poussière d'éléments minuscules, puis bandeau et contour.
+                        FillFlat(frame, rect, 0x262C36, id, onlyEmpty: true);
+                        var header = new RectD(rect.X, rect.Y, rect.Width, headerHeight);
+                        FillFlat(frame, header, 0x323A47, id, onlyEmpty: false);
+                        Outline(frame, rect, 0x0E1116, id);
+                        frame.Labels.Add(new TreemapLabel(id, header));
+                    }
+                    else
+                    {
+                        // Le cadre (et la poussière d'éléments minuscules) reste au dossier.
+                        Fill(frame, rect, surface, 0x3A4150, id, onlyEmpty: true);
+                    }
                     return;
                 }
             }
         }
         var color = tree.IsDirectory(id) ? 0x5A6272 : colorOf(id);
         Fill(frame, rect, surface, color, id, onlyEmpty: false);
+    }
+
+    private static (int X0, int Y0, int X1, int Y1) Pixels(TreemapFrame frame, RectD rect) => (
+        Math.Clamp((int)Math.Round(rect.X), 0, frame.Width),
+        Math.Clamp((int)Math.Round(rect.Y), 0, frame.Height),
+        Math.Clamp((int)Math.Round(rect.Right), 0, frame.Width),
+        Math.Clamp((int)Math.Round(rect.Bottom), 0, frame.Height));
+
+    private static void FillFlat(TreemapFrame frame, RectD rect, int rgb, int owner, bool onlyEmpty)
+    {
+        var (x0, y0, x1, y1) = Pixels(frame, rect);
+        var color = unchecked((int)0xFF000000) | rgb;
+        for (var y = y0; y < y1; y++)
+        {
+            for (var pixel = y * frame.Width + x0; pixel < y * frame.Width + x1; pixel++)
+            {
+                if (onlyEmpty && frame.Owners[pixel] != -1)
+                {
+                    continue;
+                }
+                frame.Pixels[pixel] = color;
+                frame.Owners[pixel] = owner;
+            }
+        }
+    }
+
+    private static void Outline(TreemapFrame frame, RectD rect, int rgb, int owner)
+    {
+        var (x0, y0, x1, y1) = Pixels(frame, rect);
+        if (x1 - x0 < 2 || y1 - y0 < 2)
+        {
+            return;
+        }
+        FillFlat(frame, new RectD(x0, y0, x1 - x0, 1), rgb, owner, onlyEmpty: false);
+        FillFlat(frame, new RectD(x0, y1 - 1, x1 - x0, 1), rgb, owner, onlyEmpty: false);
+        FillFlat(frame, new RectD(x0, y0, 1, y1 - y0), rgb, owner, onlyEmpty: false);
+        FillFlat(frame, new RectD(x1 - 1, y0, 1, y1 - y0), rgb, owner, onlyEmpty: false);
     }
 
     private static void AddRidge(double x1, double x2, double height, ref double s1, ref double s2)

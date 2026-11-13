@@ -46,6 +46,16 @@ Le CSV de WizTree (chemins personnels) a été supprimé après lecture de la li
 
 Le décodage côté client se fait pendant la réception (+0,1 s après le moteur). Nouvelle mesure simultanée avec WizTree non refaite.
 
+## Arbitrages complémentaires (13/11/2026, après essais sur E:)
+
+| Sujet | Décision du propriétaire | Mise en œuvre |
+|---|---|---|
+| Autorisation administrateur | **Une seule UAC au lancement**, pour toute la session (remplace « UAC à chaque analyse MFT » de D-06). Option retenue : composant admin de session, interface non élevée. | `optivance-mft-helper --session` : reste connecté jusqu'à la fermeture d'OPTIVANCE ; n'accepte que « analyser X: », « annuler », « quitter » (format exact) ; PID + image vérifiés ; s'arrête quand le canal se ferme. Aucun service. |
+| Clic droit Windows | Entrée « OPTIVANCE » sur le fond du Bureau seulement, activable/désactivable. | `HKCU\Software\Classes\Directory\Background\shell\Optivance`, écrite uniquement au clic sur le bouton de la barre latérale ; retrait complet par le même bouton. |
+| Privilège de sauvegarde | Accordé pour ouvrir `X:\$MFT`. | Essayé puis **retiré** : Windows refuse l'ouverture de `$MFT` même avec le privilège. Aucun privilège supplémentaire n'est activé. |
+
+**Disque E: (disque dur WD 1 To, secteurs 4 Ko, enregistrements MFT de 1 Ko).** La lecture brute du volume y est refusée par Windows (erreur 50 dès le secteur de démarrage). Correctifs : taille d'enregistrement < secteur acceptée ; tampons alignés sur 4 Ko ; repli sur `FSCTL_GET_NTFS_FILE_RECORD` (parcours descendant, un appel par enregistrement occupé, même décodage). Mesure : **E: 0,68 s** (ScanProbe, après UAC) et 0,7 s dans l'interface, état `completed` ; alloué 235,72 Go pour 236,18 Go occupés (WizTree : 1,6 s, mesure de l'utilisateur). La lecture du volume est redevenue séquentielle (un fil) : les lectures simultanées pénalisaient ce disque mécanique.
+
 ## Non vérifié à ce jour
 
 - Windows 10 Enterprise LTSC 2019/2021 (aucun environnement disponible).

@@ -119,9 +119,9 @@ public partial class StoragePage : UserControl
         _scanCancellation = new CancellationTokenSource();
         _warnings.Clear();
         _progressItems = 0;
-        var fast = preferMft && MftScanClient.CanScan(target, out _);
+        var fast = preferMft && MftScanClient.CanScan(target, out _) && _scanner.Session is { IsActive: true };
         SetScanning(true, fast
-            ? "Une fenêtre d’autorisation Windows va s’afficher : acceptez-la pour l’analyse rapide (lecture seule de la MFT). Sinon, l’analyse standard prendra le relais."
+            ? "Lecture directe de la table des fichiers (MFT), en lecture seule."
             : "Analyse standard : parcours des dossiers.");
         OverlayTitle.Text = fast ? "Analyse rapide en cours…" : "Analyse en cours…";
         Status($"Analyse de {target}…");
@@ -179,6 +179,41 @@ public partial class StoragePage : UserControl
             _scanCancellation = null;
         }
     }
+
+    /// <summary>
+    /// Une seule demande d'autorisation administrateur par session (choix du propriétaire) :
+    /// le composant d'analyse rapide reste actif jusqu'à la fermeture d'OPTIVANCE.
+    /// </summary>
+    public async Task InitializeSessionAsync()
+    {
+        if (_scanner.Session is { IsActive: true })
+        {
+            return;
+        }
+        try
+        {
+            Status("Demande d’autorisation pour l’analyse rapide…");
+            _scanner.Session = await MftSession.StartAsync(CancellationToken.None);
+            EnableFastButton.Visibility = Visibility.Collapsed;
+            Status("Analyse rapide (MFT) autorisée pour cette session.");
+        }
+        catch (ScanEngineException exception)
+        {
+            EnableFastButton.Visibility = Visibility.Visible;
+            Status(exception.Message);
+        }
+    }
+
+    public async Task DisposeSessionAsync()
+    {
+        if (_scanner.Session is { } session)
+        {
+            _scanner.Session = null;
+            await session.DisposeAsync();
+        }
+    }
+
+    private async void EnableFastButton_Click(object sender, RoutedEventArgs e) => await InitializeSessionAsync();
 
     /// <summary>Lance une analyse au démarrage (option <c>--scan &lt;chemin&gt;</c>).</summary>
     public void ScanAtStartup(string target)

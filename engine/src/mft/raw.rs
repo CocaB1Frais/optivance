@@ -89,7 +89,9 @@ impl BootSector {
             value @ -31..=0 => 1u64 << (-i32::from(value)),
             _ => return Err(RawError::InvalidBoot("taille d'enregistrement")),
         };
-        if !record_size.is_power_of_two() || !(512..=65_536).contains(&record_size) || record_size < bytes_per_sector.min(4096) {
+        // Un enregistrement peut être plus petit qu'un secteur (1 Kio sur disque 4K natif) ;
+        // les corrections de secteur gardent un pas de 512 octets.
+        if !record_size.is_power_of_two() || !(512..=65_536).contains(&record_size) {
             return Err(RawError::InvalidBoot("taille d'enregistrement"));
         }
         Ok(Self { bytes_per_sector, cluster_size, mft_lcn, record_size: record_size as usize })
@@ -231,6 +233,16 @@ pub enum RecordState {
 
 /// Décode un enregistrement FILE (les corrections de secteur sont appliquées sur place).
 pub fn parse_record(record: &mut [u8], record_number: u64, keep_runs: bool) -> RecordState {
+    parse_record_with(record, record_number, keep_runs, true)
+}
+
+/// Comme [`parse_record`], pour un enregistrement dont les corrections de secteur ont déjà été
+/// appliquées par Windows (`FSCTL_GET_NTFS_FILE_RECORD`).
+pub fn parse_prepared_record(record: &mut [u8], record_number: u64) -> RecordState {
+    parse_record_with(record, record_number, false, false)
+}
+
+fn parse_record_with(record: &mut [u8], record_number: u64, keep_runs: bool, fixups: bool) -> RecordState {
     if record.len() < 0x38 {
         return RecordState::Corrupt;
     }
@@ -243,7 +255,7 @@ pub fn parse_record(record: &mut [u8], record_number: u64, keep_runs: bool) -> R
     if flags & 0x0001 == 0 {
         return RecordState::Unused;
     }
-    if apply_fixups(record).is_err() {
+    if fixups && apply_fixups(record).is_err() {
         return RecordState::Corrupt;
     }
     match decode_attributes(record, record_number, flags, keep_runs) {
@@ -561,6 +573,29 @@ impl Collector {
 /// Taille des lectures de la `$MFT` (multiple de toute taille de cluster/enregistrement usuelle).
 const CHUNK_BYTES: u64 = 4 * 1024 * 1024;
 
+/// Alignement mémoire des tampons de lecture du volume : les disques à secteurs de 4 Ko
+/// refusent une mémoire non alignée (erreur Windows 50, constatée sur un disque dur 4K natif).
+const BUFFER_ALIGNMENT: usize = 4096;
+
+/// Tampon dont le début est aligné sur `BUFFER_ALIGNMENT` (sans code non sûr).
+struct AlignedBuffer {
+    data: Vec<u8>,
+    start: usize,
+    len: usize,
+}
+
+impl AlignedBuffer {
+    fn new(len: usize) -> Self {
+        let data = vec![0u8; len + BUFFER_ALIGNMENT];
+        let start = data.as_ptr().align_offset(BUFFER_ALIGNMENT).min(BUFFER_ALIGNMENT);
+        Self { data, start, len }
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        &mut self.data[self.start..self.start + self.len]
+    }
+}
+
 /// Lit et décode toute la `$MFT`. `read_at(offset, buffer)` remplit entièrement le buffer
 /// (offsets et longueurs multiples de la taille de secteur). `keep_going(lus, total)`
 /// permet la progression et l'annulation.
@@ -577,15 +612,15 @@ pub fn read_mft_with(
     read_at: impl Fn(u64, &mut [u8]) -> Result<(), String> + Sync,
     keep_going: impl FnMut(u64, u64) -> bool,
 ) -> Result<RawOutput, RawError> {
-    let mut boot = vec![0u8; 4096];
-    read_at(0, &mut boot).map_err(RawError::Io)?;
-    let geometry = BootSector::parse(&boot)?;
+    let mut boot = AlignedBuffer::new(4096);
+    read_at(0, boot.as_mut_slice()).map_err(RawError::Io)?;
+    let geometry = BootSector::parse(boot.as_mut_slice())?;
     let record_size = geometry.record_size as u64;
     let round_up = |bytes: u64| bytes.div_ceil(geometry.bytes_per_sector) * geometry.bytes_per_sector;
 
-    let mut first = vec![0u8; round_up(record_size) as usize];
-    read_at(geometry.mft_lcn * geometry.cluster_size, &mut first).map_err(RawError::Io)?;
-    let RecordState::Parsed(mft) = parse_record(&mut first[..geometry.record_size], 0, true) else {
+    let mut first = AlignedBuffer::new(round_up(record_size) as usize);
+    read_at(geometry.mft_lcn * geometry.cluster_size, first.as_mut_slice()).map_err(RawError::Io)?;
+    let RecordState::Parsed(mft) = parse_record(&mut first.as_mut_slice()[..geometry.record_size], 0, true) else {
         return Err(RawError::BadMftRecord("enregistrement 0 ($MFT)"));
     };
     let mft_bytes = mft.data.ok_or(RawError::BadMftRecord("$DATA de la $MFT absent"))?.logical;
@@ -627,9 +662,59 @@ pub fn read_mft_with(
     decode_in_parallel(&plan, geometry.record_size, total_records, read_at, keep_going)
 }
 
-/// Plusieurs fils lisent chacun leurs morceaux (lectures simultanées : `read_at` peut
-/// utiliser un handle par appel) puis les décodent ; le fil appelant fusionne les
-/// résultats (la fusion ne dépend pas de l'ordre d'arrivée) et décide de l'annulation.
+/// Géométrie fournie par `FSCTL_GET_NTFS_VOLUME_DATA`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MftGeometry {
+    pub record_size: usize,
+    pub cluster_size: u64,
+    /// `MftValidDataLength` : octets utiles du fichier `$MFT`.
+    pub valid_bytes: u64,
+}
+
+/// Lit la `$MFT` enregistrement par enregistrement avec `FSCTL_GET_NTFS_FILE_RECORD`, quand
+/// Windows refuse la lecture brute du volume (constaté sur un disque dur : erreur 50 dès le
+/// secteur de démarrage ; l'ouverture de `X:\$MFT` est elle aussi refusée).
+///
+/// `fetch(n, tampon)` renvoie l'enregistrement `n` ou, s'il est libre, l'enregistrement occupé
+/// le plus proche en dessous : `(numéro trouvé, longueur)`. Le parcours descendant ne fait donc
+/// qu'un appel par enregistrement occupé. Le décodage est celui de [`read_mft`].
+pub fn read_mft_by_records(
+    total_records: u64,
+    mut fetch: impl FnMut(u64, &mut [u8]) -> Result<(u64, usize), String>,
+    mut keep_going: impl FnMut(u64, u64) -> bool,
+) -> Result<RawOutput, RawError> {
+    const PROGRESS_STEP: u64 = 4096;
+    let mut collector = Collector::with_capacity(total_records as usize);
+    let mut buffer = vec![0u8; 65_536];
+    let mut next = total_records.checked_sub(1);
+    let (mut done, mut reported) = (0u64, 0u64);
+    while let Some(requested) = next {
+        let (found, length) = fetch(requested, &mut buffer).map_err(RawError::Io)?;
+        if found > requested || length > buffer.len() {
+            return Err(RawError::BadMftRecord("réponse FSCTL_GET_NTFS_FILE_RECORD inattendue"));
+        }
+        // Les enregistrements found+1..=requested sont libres.
+        collector.stats.records_read += requested - found;
+        collector.feed(parse_prepared_record(&mut buffer[..length], found));
+        done += requested - found + 1;
+        if done - reported >= PROGRESS_STEP {
+            reported = done;
+            if !keep_going(done, total_records) {
+                return Err(RawError::Cancelled);
+            }
+        }
+        next = found.checked_sub(1);
+    }
+    let started = std::time::Instant::now();
+    let mut output = collector.finish();
+    output.stats.finish_ms = started.elapsed().as_secs_f64() * 1000.0;
+    Ok(output)
+}
+
+/// Un fil lit les morceaux **dans l'ordre du disque** (lecture séquentielle : efficace sur
+/// disque dur comme sur SSD ; des lectures simultanées font sauter la tête d'un disque
+/// mécanique), plusieurs fils les décodent, le fil appelant fusionne les résultats (la fusion
+/// ne dépend pas de l'ordre d'arrivée) et décide de l'annulation.
 fn decode_in_parallel(
     plan: &[(u64, u64, u64, u64)],
     record_size: usize,
@@ -637,44 +722,56 @@ fn decode_in_parallel(
     read_at: impl Fn(u64, &mut [u8]) -> Result<(), String> + Sync,
     mut keep_going: impl FnMut(u64, u64) -> bool,
 ) -> Result<RawOutput, RawError> {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::mpsc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc, Mutex};
 
     let workers = std::thread::available_parallelism().map_or(4, |count| count.get()).clamp(1, 8).min(plan.len().max(1));
-    let next = AtomicUsize::new(0);
     let stop = AtomicBool::new(false);
     let mut collector = Collector::with_capacity(total_records as usize);
     std::thread::scope(|scope| {
         let (result_sender, result_receiver) = mpsc::channel::<Result<(u64, Vec<RecordState>), RawError>>();
+        let (job_sender, job_receiver) = mpsc::sync_channel::<(u64, u64, AlignedBuffer)>(workers * 2);
+        let job_receiver = Arc::new(Mutex::new(job_receiver));
         for _ in 0..workers {
+            let jobs = Arc::clone(&job_receiver);
             let results = result_sender.clone();
-            let (next, stop, read_at) = (&next, &stop, &read_at);
-            scope.spawn(move || {
-                let mut buffer = Vec::new();
-                loop {
-                    if stop.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    let index = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(&(offset, bytes, first, count)) = plan.get(index) else { break };
-                    buffer.resize(bytes as usize, 0);
-                    if let Err(error) = read_at(offset, &mut buffer) {
-                        let _ = results.send(Err(RawError::Io(error)));
-                        break;
-                    }
-                    let states: Vec<RecordState> = buffer
-                        .chunks_exact_mut(record_size)
-                        .take(count as usize)
-                        .enumerate()
-                        .map(|(position, record)| parse_record(record, first + position as u64, false))
-                        .filter(|state| !matches!(state, RecordState::Unused))
-                        .collect();
-                    if results.send(Ok((count, states))).is_err() {
-                        break;
-                    }
+            scope.spawn(move || loop {
+                let job = jobs.lock().map(|receiver| receiver.recv());
+                let Ok(Ok((first, count, mut buffer))) = job else { break };
+                let states: Vec<RecordState> = buffer
+                    .as_mut_slice()
+                    .chunks_exact_mut(record_size)
+                    .take(count as usize)
+                    .enumerate()
+                    .map(|(position, record)| parse_record(record, first + position as u64, false))
+                    .filter(|state| !matches!(state, RecordState::Unused))
+                    .collect();
+                if results.send(Ok((count, states))).is_err() {
+                    break;
                 }
             });
         }
+        // Seuls les fils de décodage détiennent le récepteur : s'ils s'arrêtent, l'envoi du
+        // lecteur échoue au lieu de bloquer sur un canal plein.
+        drop(job_receiver);
+
+        let reader_results = result_sender.clone();
+        let (stop_flag, read_at) = (&stop, &read_at);
+        scope.spawn(move || {
+            for &(offset, bytes, first, count) in plan {
+                if stop_flag.load(Ordering::Relaxed) {
+                    break;
+                }
+                let mut buffer = AlignedBuffer::new(bytes as usize);
+                if let Err(error) = read_at(offset, buffer.as_mut_slice()) {
+                    let _ = reader_results.send(Err(RawError::Io(error)));
+                    break;
+                }
+                if job_sender.send((first, count, buffer)).is_err() {
+                    break;
+                }
+            }
+        });
         drop(result_sender);
 
         let mut done = 0u64;
@@ -889,6 +986,17 @@ mod tests {
     fn boot_sector_gives_geometry() {
         let boot = BootSector::parse(&boot_sector(4)).unwrap();
         assert_eq!(boot, BootSector { bytes_per_sector: 512, cluster_size: 4096, mft_lcn: 4, record_size: 1024 });
+    }
+
+    #[test]
+    fn boot_sector_accepts_1k_records_on_4k_native_sectors() {
+        // Disque « 4K natif » (cas réel E: du 13/11/2026) : secteur 4096, cluster 4096,
+        // enregistrements MFT de 1024 octets.
+        let mut sector = boot_sector(4);
+        put16(&mut sector, 0x0B, 4096);
+        sector[0x0D] = 1;
+        let boot = BootSector::parse(&sector).unwrap();
+        assert_eq!((boot.bytes_per_sector, boot.cluster_size, boot.record_size), (4096, 4096, 1024));
     }
 
     #[test]
@@ -1131,6 +1239,8 @@ mod tests {
         let output = read_mft(
             |offset, buffer| {
                 reads.lock().unwrap().push((offset, buffer.len()));
+                // Les disques à secteurs de 4 Ko exigent une mémoire alignée (erreur Windows 50 sinon).
+                assert_eq!(buffer.as_ptr() as usize % 4096, 0, "tampon de lecture non aligné");
                 let start = offset as usize;
                 buffer.copy_from_slice(volume.get(start..start + buffer.len()).ok_or("hors volume")?);
                 Ok(())
@@ -1180,6 +1290,36 @@ mod tests {
         assert_eq!(progress.len(), 5);
         assert_eq!(progress.last(), Some(&(20, 20)));
         assert_eq!(output.sizes.get(&(19u128 | (1u128 << 48))).map(|s| s.logical), Some(190));
+    }
+
+    #[test]
+    fn reads_records_one_by_one_skipping_free_ones_downwards() {
+        // FSCTL_GET_NTFS_FILE_RECORD : renvoie l'enregistrement demandé, ou l'enregistrement
+        // occupé le plus proche en dessous ; les corrections de secteur sont déjà appliquées.
+        let mut table: Vec<Option<Vec<u8>>> = vec![None; 40];
+        for (number, mut bytes) in [(0usize, root_record()), (5, root_record()), (16, simple_file(1, 5 | (5 << 48), "a.bin", 11)), (31, simple_file(2, 5 | (5 << 48), "b.bin", 22))] {
+            apply_fixups(&mut bytes).unwrap();
+            table[number] = Some(bytes);
+        }
+        let mut calls = Vec::new();
+        let output = read_mft_by_records(
+            40,
+            |requested, buffer| {
+                calls.push(requested);
+                let found = (0..=requested as usize).rev().find(|n| table[*n].is_some()).ok_or("aucun")?;
+                let bytes = table[found].as_ref().unwrap();
+                buffer[..bytes.len()].copy_from_slice(bytes);
+                Ok((found as u64, bytes.len()))
+            },
+            |_, _| true,
+        )
+        .unwrap();
+        let mut names: Vec<_> = output.records.iter().map(|r| r.name.as_str()).filter(|n| *n != ".").collect();
+        names.sort_unstable();
+        assert_eq!(names, ["a.bin", "b.bin"]);
+        assert_eq!(calls, [39, 30, 15, 4]);
+        assert_eq!(output.stats.records_read, 40);
+        assert_eq!(output.stats.corrupt, 0);
     }
 
     #[test]

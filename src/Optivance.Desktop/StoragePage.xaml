@@ -268,6 +268,13 @@
             <TextBlock Text="Dossier…" />
           </StackPanel>
         </Button>
+        <Button x:Name="EnableFastButton" Style="{StaticResource GhostButton}" Margin="8,0,0,0" Click="EnableFastButton_Click" Visibility="Collapsed"
+                ToolTip="Demander l’autorisation administrateur une fois pour toute la session (lecture directe de la MFT)">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="&#xE945;" Style="{StaticResource Icon}" Foreground="#F2C14E" Margin="0,0,8,0" />
+            <TextBlock Text="Activer l’analyse rapide" />
+          </StackPanel>
+        </Button>
         <Button x:Name="CancelButton" Style="{StaticResource GhostButton}" Margin="8,0,0,0" Click="CancelButton_Click" Visibility="Collapsed">
           <StackPanel Orientation="Horizontal">
             <TextBlock Text="&#xE711;" Style="{StaticResource Icon}" Margin="0,0,8,0" />

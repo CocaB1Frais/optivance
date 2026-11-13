@@ -83,6 +83,85 @@ pub fn open_volume(letter: char) -> io::Result<OwnedHandle> {
     open_handle(&wide(&format!("\\\\.\\{letter}:")), GENERIC_READ, 0)
 }
 
+/// Handle de lecture brute sans cache (`FILE_FLAG_NO_BUFFERING`) : offsets, longueurs et
+/// mémoire alignés sur le secteur, ce que garantit le lecteur de `$MFT`.
+pub fn open_volume_unbuffered(letter: char) -> io::Result<OwnedHandle> {
+    open_handle(&wide(&format!("\\\\.\\{letter}:")), GENERIC_READ, FILE_FLAG_NO_BUFFERING)
+}
+
+const FILE_FLAG_NO_BUFFERING: u32 = 0x2000_0000;
+/// CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 25, METHOD_BUFFERED, FILE_ANY_ACCESS).
+const FSCTL_GET_NTFS_VOLUME_DATA: u32 = 0x0009_0064;
+
+/// Géométrie NTFS par `FSCTL_GET_NTFS_VOLUME_DATA` (sans lecture brute du volume).
+pub fn ntfs_geometry(volume: &impl AsRawHandle) -> io::Result<super::raw::MftGeometry> {
+    let mut data = [0u8; 96];
+    let mut returned = 0u32;
+    // SAFETY: tampon de sortie valide de la taille indiquée ; aucune entrée ; appel synchrone.
+    let ok = unsafe {
+        DeviceIoControl(
+            volume.as_raw_handle(),
+            FSCTL_GET_NTFS_VOLUME_DATA,
+            std::ptr::null_mut(),
+            0,
+            data.as_mut_ptr().cast(),
+            data.len() as u32,
+            &mut returned,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if returned < 64 {
+        return Err(io::Error::other("réponse NTFS_VOLUME_DATA tronquée"));
+    }
+    let u32_at = |at: usize| u32::from_le_bytes(data[at..at + 4].try_into().expect("taille fixe"));
+    let i64_at = |at: usize| i64::from_le_bytes(data[at..at + 8].try_into().expect("taille fixe"));
+    Ok(super::raw::MftGeometry {
+        cluster_size: u64::from(u32_at(44)),
+        record_size: u32_at(48) as usize,
+        valid_bytes: i64_at(56).max(0) as u64,
+    })
+}
+
+/// CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 26, METHOD_BUFFERED, FILE_ANY_ACCESS).
+const FSCTL_GET_NTFS_FILE_RECORD: u32 = 0x0009_0068;
+
+/// Un enregistrement MFT par `FSCTL_GET_NTFS_FILE_RECORD` : l'enregistrement `record_number` ou,
+/// s'il est libre, l'enregistrement occupé le plus proche en dessous. Renvoie `(numéro, longueur)` ;
+/// l'enregistrement (corrections de secteur appliquées) est copié au début de `record`.
+pub fn fetch_file_record(volume: &impl AsRawHandle, record_number: u64, record: &mut [u8]) -> Result<(u64, usize), String> {
+    const HEADER: usize = 12; // FileReferenceNumber (8) + FileRecordLength (4)
+    let mut output = vec![0u8; HEADER + record.len()];
+    let mut input = record_number.to_le_bytes();
+    let mut returned = 0u32;
+    // SAFETY: entrée (référence 64 bits) et sortie valides aux tailles indiquées ; appel synchrone.
+    let ok = unsafe {
+        DeviceIoControl(
+            volume.as_raw_handle(),
+            FSCTL_GET_NTFS_FILE_RECORD,
+            input.as_mut_ptr().cast(),
+            input.len() as u32,
+            output.as_mut_ptr().cast(),
+            output.len() as u32,
+            &mut returned,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(format!("FSCTL_GET_NTFS_FILE_RECORD({record_number}) : {}", io::Error::last_os_error()));
+    }
+    let found = u64::from_le_bytes(output[0..8].try_into().expect("taille fixe")) & 0x0000_FFFF_FFFF_FFFF;
+    let length = u32::from_le_bytes(output[8..12].try_into().expect("taille fixe")) as usize;
+    if length > record.len() || HEADER + length > returned as usize {
+        return Err(format!("réponse FSCTL tronquée pour l'enregistrement {record_number}"));
+    }
+    record[..length].copy_from_slice(&output[HEADER..HEADER + length]);
+    Ok((found, length))
+}
+
+
 /// Lecture exacte à une position du volume (offset et longueur alignés sur le secteur).
 pub fn read_volume_at(volume: &std::fs::File, offset: u64, buffer: &mut [u8]) -> Result<(), String> {
     use std::os::windows::fs::FileExt;
@@ -91,7 +170,7 @@ pub fn read_volume_at(volume: &std::fs::File, offset: u64, buffer: &mut [u8]) ->
         match volume.seek_read(&mut buffer[filled..], offset + filled as u64) {
             Ok(0) => return Err(format!("fin du volume à l'offset {}", offset + filled as u64)),
             Ok(read) => filled += read,
-            Err(error) => return Err(error.to_string()),
+            Err(error) => return Err(format!("{} octets à l'offset {} : {error}", buffer.len() - filled, offset + filled as u64)),
         }
     }
     Ok(())

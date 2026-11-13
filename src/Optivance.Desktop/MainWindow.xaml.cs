@@ -15,15 +15,24 @@ public partial class MainWindow : Window
         _storagePage.StatusChanged += SetStatus;
         PageHost.Content = _storagePage;
         UpdateNavigation(StorageNavigation);
+        RefreshShellMenuButton();
 
         // OPTIVANCE.exe --scan <chemin> : analyse lancée dès l'ouverture.
         var arguments = Environment.GetCommandLineArgs();
         var scanIndex = Array.IndexOf(arguments, "--scan");
-        if (scanIndex > 0 && scanIndex + 1 < arguments.Length)
+        var target = scanIndex > 0 && scanIndex + 1 < arguments.Length ? arguments[scanIndex + 1] : null;
+        Loaded += async (_, _) =>
         {
-            var target = arguments[scanIndex + 1];
-            Loaded += (_, _) => _storagePage.ScanAtStartup(target);
-        }
+            // Autorisation administrateur demandée une fois, au lancement, pour toute la session.
+            await _storagePage.InitializeSessionAsync();
+            if (target is not null)
+            {
+                _storagePage.ScanAtStartup(target);
+            }
+        };
+        // Fermeture du composant élevé hors du fil d'interface (pas d'interblocage), 3 s au plus ;
+        // à défaut, il s'arrête seul à la fermeture du canal.
+        Closed += (_, _) => Task.Run(_storagePage.DisposeSessionAsync).Wait(TimeSpan.FromSeconds(3));
     }
 
     private void Navigation_Click(object sender, RoutedEventArgs e)
@@ -72,6 +81,31 @@ public partial class MainWindow : Window
     }
 
     private void SetStatus(string message) => GlobalStatus.Text = message;
+
+    private void RefreshShellMenuButton() =>
+        ShellMenuText.Text = Optivance.Infrastructure.ShellIntegration.IsRegistered() ? "✓  Dans le clic droit du Bureau (retirer)" : "＋  Ajouter au clic droit du Bureau";
+
+    private void ShellMenuButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (Optivance.Infrastructure.ShellIntegration.IsRegistered())
+            {
+                Optivance.Infrastructure.ShellIntegration.Unregister();
+                SetStatus("OPTIVANCE retiré du clic droit du Bureau.");
+            }
+            else
+            {
+                Optivance.Infrastructure.ShellIntegration.Register();
+                SetStatus("OPTIVANCE ajouté au clic droit du Bureau (sous Windows 11 : aussi dans « Afficher plus d’options »).");
+            }
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or System.Security.SecurityException or System.IO.IOException or InvalidOperationException)
+        {
+            SetStatus($"Modification du clic droit impossible : {exception.Message}");
+        }
+        RefreshShellMenuButton();
+    }
 
     private async void Window_Closing(object? sender, CancelEventArgs e)
     {

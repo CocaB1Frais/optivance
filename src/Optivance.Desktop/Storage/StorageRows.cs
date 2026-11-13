@@ -257,6 +257,8 @@ internal sealed class DriveItem
     public double BarWidth => UsedFraction * 120;
     public bool IsNtfs { get; init; }
 
+    public override string ToString() => Label;
+
     public static List<DriveItem> Load()
     {
         var drives = new List<DriveItem>();

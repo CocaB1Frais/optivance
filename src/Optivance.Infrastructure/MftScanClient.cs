@@ -122,7 +122,7 @@ public sealed class MftScanClient
     }
 
     /// <summary>Le client du canal doit être exactement le helper lancé par cette analyse.</summary>
-    private static void VerifyClient(NamedPipeServerStream pipe, Process process, string expectedPath)
+    internal static void VerifyClient(NamedPipeServerStream pipe, Process process, string expectedPath)
     {
         if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle, out var clientId) || clientId != (uint)process.Id)
         {
@@ -174,28 +174,185 @@ public sealed class MftScanClient
 }
 
 /// <summary>
-/// Choix de la méthode : MFT (UAC) pour la racine d'un volume NTFS, repli automatique sur le
-/// scan classique en cas de refus ou d'échec, la cause étant conservée dans le résumé.
+/// Composant d'analyse MFT de session (choix du propriétaire du 13/11/2026) : une seule
+/// demande UAC au lancement d'OPTIVANCE ; le helper élevé reste connecté et exécute les
+/// analyses demandées jusqu'à la fermeture de l'application. L'interface reste non élevée,
+/// aucun service n'est installé, le helper n'accepte que « analyser un volume », « annuler »
+/// et « quitter », et son identité (PID + image) est vérifiée à la connexion.
+/// </summary>
+public sealed class MftSession : IAsyncDisposable
+{
+    private const int ErrorCancelled = 1223;
+    private readonly NamedPipeServerStream _pipe;
+    private readonly Process _process;
+    private readonly PipeLineReader _reader;
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private bool _broken;
+
+    private MftSession(NamedPipeServerStream pipe, Process process)
+    {
+        _pipe = pipe;
+        _process = process;
+        _reader = new PipeLineReader(pipe);
+    }
+
+    public bool IsActive => !_broken && _pipe.IsConnected && !_process.HasExited;
+
+    /// <summary>Demande l'élévation (UAC) et attend la connexion du helper.</summary>
+    public static async Task<MftSession> StartAsync(CancellationToken cancellationToken)
+    {
+        var helperPath = MftScanClient.HelperPath;
+        if (!File.Exists(helperPath))
+        {
+            throw new ScanEngineException("helper-missing", "Le composant d’analyse rapide est absent du dossier de l’application.");
+        }
+        var pipeName = $"optivance-mft-{Guid.NewGuid():N}";
+        var pipe = SecurePipeServer.CreateCurrentUserOnly(pipeName);
+        Process? process;
+        try
+        {
+            process = Process.Start(new ProcessStartInfo
+            {
+                FileName = helperPath,
+                Arguments = $"--pipe-name {pipeName} --session",
+                UseShellExecute = true,
+                Verb = "runas",
+                WindowStyle = ProcessWindowStyle.Hidden,
+                WorkingDirectory = AppContext.BaseDirectory
+            });
+        }
+        catch (System.ComponentModel.Win32Exception exception) when (exception.NativeErrorCode == ErrorCancelled)
+        {
+            await pipe.DisposeAsync();
+            throw new ScanEngineException("uac-declined", "Autorisation administrateur refusée : l’analyse rapide est désactivée pour cette session.");
+        }
+        if (process is null)
+        {
+            await pipe.DisposeAsync();
+            throw new ScanEngineException("helper-start-failed", "Le composant d’analyse rapide n’a pas pu démarrer.");
+        }
+
+        try
+        {
+            var connection = pipe.WaitForConnectionAsync(cancellationToken);
+            var exit = process.WaitForExitAsync(CancellationToken.None);
+            if (await Task.WhenAny(connection, exit) == exit && !pipe.IsConnected)
+            {
+                throw new ScanEngineException("helper-exited", "Le composant d’analyse rapide s’est arrêté avant la connexion.");
+            }
+            await connection;
+            MftScanClient.VerifyClient(pipe, process, helperPath);
+            var session = new MftSession(pipe, process);
+            var hello = await session._reader.ReadLineAsync(cancellationToken);
+            if (hello is not { } line || !line.Span.StartsWith("{\"v\":3,\"type\":\"hello\""u8))
+            {
+                throw new ScanEngineException("helper-protocol", "Le composant d’analyse rapide ne parle pas le protocole attendu.");
+            }
+            return session;
+        }
+        catch
+        {
+            await pipe.DisposeAsync();
+            process.Dispose();
+            throw;
+        }
+    }
+
+    public async Task<ScanResult> ScanVolumeAsync(char letter, IProgress<ScanUpdate>? progress, CancellationToken cancellationToken)
+    {
+        if (!char.IsAsciiLetter(letter))
+        {
+            throw new ArgumentException("Lettre de volume invalide.", nameof(letter));
+        }
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (!IsActive)
+            {
+                throw new ScanEngineException("session-closed", "Le composant d’analyse rapide n’est plus disponible.");
+            }
+            var total = Stopwatch.StartNew();
+            var command = Encoding.ASCII.GetBytes($"{{\"v\":3,\"type\":\"scan\",\"volume\":\"{char.ToUpperInvariant(letter)}\"}}\n");
+            try
+            {
+                await _pipe.WriteAsync(command, cancellationToken);
+                await _pipe.FlushAsync(cancellationToken);
+                var (session, summary) = await ScanSession.RunUntilTerminalAsync(_reader, _pipe, progress, cancellationToken);
+                if (summary is null)
+                {
+                    _broken = true;
+                    throw new ScanEngineException("session-closed", "Le composant d’analyse rapide a fermé le canal.");
+                }
+                var result = ScanEngineClient.Complete(session, summary, total);
+                var metrics = result.Summary.ClientMetrics with { SinceConnectionMilliseconds = total.Elapsed.TotalMilliseconds };
+                return result with { Summary = result.Summary with { ClientMetrics = metrics } };
+            }
+            catch (Exception exception) when (exception is IOException and not ScanEngineException or InvalidDataException or ObjectDisposedException)
+            {
+                // Canal dans un état inconnu : la session n'est plus réutilisée.
+                _broken = true;
+                throw new ScanEngineException("session-closed", $"Le composant d’analyse rapide ne répond plus ({exception.Message}).");
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            if (IsActive)
+            {
+                await _pipe.WriteAsync("{\"v\":3,\"type\":\"quit\"}\n"u8.ToArray());
+                await _pipe.FlushAsync();
+            }
+        }
+        catch (Exception exception) when (exception is IOException or ObjectDisposedException)
+        {
+            // Le helper peut déjà être arrêté.
+        }
+        await _pipe.DisposeAsync();
+        await Task.WhenAny(_process.WaitForExitAsync(), Task.Delay(TimeSpan.FromSeconds(3)));
+        _process.Dispose();
+        _gate.Dispose();
+    }
+}
+
+/// <summary>
+/// Choix de la méthode : MFT par le composant de session pour la racine d'un volume NTFS,
+/// repli automatique sur le scan classique (cause conservée dans le résumé). Aucune demande
+/// UAC n'est faite pendant une analyse.
 /// </summary>
 public sealed class StorageScanner
 {
     private readonly ScanEngineClient _classic = new();
-    private readonly MftScanClient _mft = new();
+
+    /// <summary>Composant de session actif, ou null (non autorisé, arrêté).</summary>
+    public MftSession? Session { get; set; }
 
     public async Task<ScanResult> ScanAsync(string target, bool preferMft, IProgress<ScanUpdate>? progress, CancellationToken cancellationToken)
     {
         string? notice = null;
         if (preferMft && MftScanClient.CanScan(target, out var letter))
         {
-            try
+            if (Session is { IsActive: true } session)
             {
-                return await _mft.ScanVolumeAsync(letter, progress, cancellationToken);
+                try
+                {
+                    return await session.ScanVolumeAsync(letter, progress, cancellationToken);
+                }
+                catch (ScanEngineException exception) when (!cancellationToken.IsCancellationRequested)
+                {
+                    notice = $"Analyse rapide indisponible ({exception.Message}) : analyse standard utilisée.";
+                    progress?.Report(new ScanWarning(target, notice));
+                }
             }
-            catch (ScanEngineException exception) when (!cancellationToken.IsCancellationRequested)
+            else
             {
-                notice = exception.Code == "uac-declined"
-                    ? "Analyse rapide non autorisée (UAC refusée) : analyse standard utilisée."
-                    : $"Analyse rapide indisponible ({exception.Message}) : analyse standard utilisée.";
+                notice = "Analyse rapide non autorisée pour cette session : analyse standard utilisée.";
                 progress?.Report(new ScanWarning(target, notice));
             }
         }

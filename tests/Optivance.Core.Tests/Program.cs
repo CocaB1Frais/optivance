@@ -96,6 +96,24 @@ static List<ScanEntry> Sample() =>
 }
 
 {
+    // Bandeaux de dossiers (style WizTree) : titre au-dessus des enfants, cadre au dossier.
+    var tree = new StorageTree(@"C:\", Sample());
+    var frame = CushionTreemap.Render(tree, 0, 400, 300, _ => 0x4F8DF5, CancellationToken.None, headerHeight: 15);
+    var rootLabel = frame.Labels.FirstOrDefault(label => label.Id == 0);
+    var folderLabel = frame.Labels.FirstOrDefault(label => label.Id == 1);
+    Check("bandeau : racine titrée", rootLabel.Bounds.Height == 15 && rootLabel.Bounds.Width > 300, rootLabel.ToString());
+    Check("bandeau : dossier assez grand titré", folderLabel.Bounds.Height == 15, folderLabel.ToString());
+    var header = folderLabel.Bounds;
+    var headerOwners = Enumerable.Range((int)header.X + 2, Math.Max(1, (int)header.Width - 4))
+        .Select(x => frame.HitTest(x, (int)header.Y + 7)).Distinct().ToList();
+    Check("bandeau : appartient au dossier", headerOwners.SequenceEqual([1]), string.Join(",", headerOwners));
+    Check("bandeau : enfants sous le titre", frame.Bounds[3].Y >= header.Bottom - 1e-9, frame.Bounds[3].ToString());
+    Check("bandeau : aucun titre pour un fichier", frame.Labels.All(label => tree.IsDirectory(label.Id)));
+    var small = CushionTreemap.Render(tree, 0, 30, 20, _ => 0x4F8DF5, CancellationToken.None, headerHeight: 15);
+    Check("bandeau : trop petit, pas de titre", small.Labels.Count == 0 && small.Owners.All(owner => owner >= 0));
+}
+
+{
     Check("format octets", StorageFormat.Bytes(1536) == "1,50 Ko", StorageFormat.Bytes(1536));
     Check("format Go", StorageFormat.Bytes(187_855_987_472) == "175 Go", StorageFormat.Bytes(187_855_987_472));
     Check("format pourcentage", StorageFormat.Percent(0.256) == "26 %" && StorageFormat.Percent(0.0004) == "< 0,1 %", StorageFormat.Percent(0.256));
