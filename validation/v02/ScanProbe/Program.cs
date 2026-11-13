@@ -8,7 +8,7 @@ if (args.Length is < 1 or > 3)
     return 64;
 }
 
-// Mode MFT : lance le helper avec demande UAC (lecture seule), métriques uniquement.
+// Mode MFT : lance le helper avec demande UAC (lecture seule), mÃ©triques uniquement.
 char? mftLetter = args.Length == 2 && args[0] == "--mft" && args[1].Length >= 1 && char.IsAsciiLetter(args[1][0]) ? args[1][0] : null;
 var target = mftLetter is { } volumeLetter ? $"{volumeLetter}:\\" : Path.GetFullPath(args[0]);
 if (mftLetter is not null)
@@ -59,6 +59,7 @@ try
     Console.WriteLine($"uniqueLogicalBytes={summary.UniqueLogicalBytes}");
     Console.WriteLine($"uniqueAllocatedBytes={summary.UniqueAllocatedBytes}");
     Console.WriteLine($"totalMs={summary.Elapsed.TotalMilliseconds.ToString("F3", culture)}");
+    Console.WriteLine($"sinceConnectionMs={client.SinceConnectionMilliseconds.ToString("F3", culture)}");
     Console.WriteLine($"engineTotalMs={engine.TotalMilliseconds.ToString("F3", culture)}");
     Console.WriteLine($"enumerationMs={engine.EnumerationMilliseconds.ToString("F3", culture)}");
     Console.WriteLine($"sortingMs={engine.SortingMilliseconds.ToString("F3", culture)}");
@@ -89,7 +90,7 @@ catch (OperationCanceledException) when (cancelAfterMilliseconds.HasValue)
 }
 catch (Exception exception)
 {
-    Console.Error.WriteLine($"scan failed: {exception.GetType().Name}: {exception.Message}");
+    Console.Error.WriteLine($"scan failed: {exception}");
     return 2;
 }
 

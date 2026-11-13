@@ -34,6 +34,18 @@ Ce document consigne des arbitrages du propriétaire ; il ne modifie pas les doc
 
 Le CSV de WizTree (chemins personnels) a été supprimé après lecture de la ligne racine. Le temps du clic UAC n'est pas isolé : l'écart de durée est indicatif.
 
+### Après optimisation (13/11/2026, mêmes conditions, `ScanProbe --mft C`)
+
+| Mesure | Avant | Après |
+|---|---|---|
+| Moteur (lecture MFT + index + envoi) | 3,51 s | 2,39 s |
+| Lecture et décodage MFT | 1,94 s | 1,35 s (8 fils, un handle de volume par fil) |
+| Index | 0,49 s | 0,33 s |
+| De l'acceptation UAC au résultat complet côté client | non mesuré | **2,50 s** |
+| De bout en bout, clic UAC compris | 6,1–6,2 s | 4,7–5,7 s (variable selon le clic) |
+
+Le décodage côté client se fait pendant la réception (+0,1 s après le moteur). Nouvelle mesure simultanée avec WizTree non refaite.
+
 ## Non vérifié à ce jour
 
 - Windows 10 Enterprise LTSC 2019/2021 (aucun environnement disponible).

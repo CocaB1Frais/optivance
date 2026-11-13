@@ -94,6 +94,7 @@ public sealed class MftScanClient
                 throw new ScanEngineException("helper-exited", $"Le composant d’analyse MFT s’est arrêté avant la connexion (code {SafeExitCode(process)}).");
             }
             await connection;
+            var sinceConnection = Stopwatch.StartNew();
             VerifyClient(pipe, process, helperPath);
 
             var (session, summary) = await ScanSession.RunAsync(pipe, progress, cancellationToken);
@@ -103,7 +104,8 @@ public sealed class MftScanClient
                 throw new ScanEngineException("helper-closed", "Le composant d’analyse MFT a fermé le canal sans résultat final.");
             }
             var result = ScanEngineClient.Complete(session, summary, total);
-            return result;
+            var metrics = result.Summary.ClientMetrics with { SinceConnectionMilliseconds = sinceConnection.Elapsed.TotalMilliseconds };
+            return result with { Summary = result.Summary with { ClientMetrics = metrics } };
         }
     }
 

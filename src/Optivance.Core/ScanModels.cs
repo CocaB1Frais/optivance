@@ -59,7 +59,9 @@ public sealed record ScanClientMetrics(
     double JsonProcessingMilliseconds,
     double IndexValidationMilliseconds,
     long EntriesReceived,
-    long ResultBatches);
+    long ResultBatches,
+    /// <summary>Durée depuis la connexion du moteur (exclut l'attente de l'UAC) ; 0 si non mesurée.</summary>
+    double SinceConnectionMilliseconds = 0);
 
 public sealed record ScanSummary(
     ScanState State,

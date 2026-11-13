@@ -271,27 +271,61 @@ internal sealed class ScanSession
     {
         var session = new ScanSession();
         var reader = new PipeLineReader(pipe);
-        using var writer = new StreamWriter(pipe, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), 4096, leaveOpen: true) { AutoFlush = true };
-        using var cancelRegistration = cancellationToken.Register(() => _ = SendCancelAsync(writer));
-        while (await reader.ReadLineAsync(CancellationToken.None) is { } line)
+        // Annulation écrite directement sur le flux : aucun tampon à vider quand le moteur a
+        // déjà fermé le canal.
+        using var cancelRegistration = cancellationToken.Register(() => _ = SendCancelAsync(pipe));
+
+        // Lecture du canal et décodage en parallèle : le moteur n'attend plus le décodage.
+        var lines = System.Threading.Channels.Channel.CreateBounded<byte[]>(new System.Threading.Channels.BoundedChannelOptions(256)
         {
-            if (line.IsEmpty)
+            SingleReader = true,
+            SingleWriter = true
+        });
+        var pump = Task.Run(async () =>
+        {
+            try
             {
-                continue;
+                while (await reader.ReadLineAsync(CancellationToken.None) is { } line)
+                {
+                    if (!line.IsEmpty)
+                    {
+                        await lines.Writer.WriteAsync(line.ToArray());
+                    }
+                }
+                lines.Writer.TryComplete();
             }
-            if (session.Process(line, progress) is { } summary)
+            catch (Exception exception)
             {
-                return (session, summary);
+                lines.Writer.TryComplete(exception);
             }
+        });
+
+        var summary = await Task.Run(async () =>
+        {
+            await foreach (var line in lines.Reader.ReadAllAsync())
+            {
+                if (session.Process(line, progress) is { } terminal)
+                {
+                    return terminal;
+                }
+            }
+            return null;
+        });
+        if (summary is null)
+        {
+            await pump;
         }
-        return (session, null);
+        return (session, summary);
     }
 
-    private static async Task SendCancelAsync(StreamWriter writer)
+    private static readonly byte[] CancelMessage = Encoding.ASCII.GetBytes("{\"v\":3,\"type\":\"cancel\"}\n");
+
+    private static async Task SendCancelAsync(Stream pipe)
     {
         try
         {
-            await writer.WriteLineAsync("{\"v\":3,\"type\":\"cancel\"}");
+            await pipe.WriteAsync(CancelMessage);
+            await pipe.FlushAsync();
         }
         catch (IOException)
         {
