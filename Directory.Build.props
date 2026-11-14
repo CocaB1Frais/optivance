@@ -1,4 +1,4 @@
-<Project>
+﻿<Project>
   <!-- Numéro de version unique d'OPTIVANCE : à modifier ici (et dans CHANGELOG.md) avant chaque publication. -->
   <PropertyGroup>
     <Version>1.0.0</Version>
@@ -6,7 +6,7 @@
     <Company>OPTIVANCE</Company>
     <Copyright>© 2026 OPTIVANCE. Tous droits réservés.</Copyright>
     <!-- Page des versions publiées (ouverte dans le navigateur ; l'application ne se connecte à rien). -->
-    <OptivanceReleasesUrl></OptivanceReleasesUrl>
+    <OptivanceReleasesUrl>https://github.com/CocaB1Frais/optivance/releases</OptivanceReleasesUrl>
   </PropertyGroup>
   <ItemGroup>
     <AssemblyMetadata Include="ReleasesUrl" Value="$(OptivanceReleasesUrl)" />
