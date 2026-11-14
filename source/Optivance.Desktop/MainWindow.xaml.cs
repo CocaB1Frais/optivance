@@ -35,6 +35,16 @@ public partial class MainWindow : Window
         }
 
         _tray = CreateTray();
+        _tray.BalloonTipClicked += (_, _) => Dispatcher.BeginInvoke(async () => await OfferUpdateAsync());
+        if (Environment.GetEnvironmentVariable("OPTIVANCE_DATA_DIR") is not { Length: > 0 })
+        {
+            // Vérification quotidienne, quelques secondes après l'ouverture (jamais bloquante).
+            Loaded += async (_, _) =>
+            {
+                await Task.Delay(TimeSpan.FromSeconds(8));
+                await CheckForUpdatesAsync(manual: false);
+            };
+        }
         if (App.DesktopMenuJustAdded)
         {
             Loaded += (_, _) => _tray.ShowBalloonTip(7000, "Nouveau : OPTIVANCE dans le clic droit du Bureau",
@@ -262,6 +272,93 @@ public partial class MainWindow : Window
         Topmost = true;
         Topmost = false;
         Focus();
+    }
+
+    // ───────────────────────────── Mises à jour ─────────────────────────────
+
+    private ReleaseInfo? _pendingRelease;
+    private bool _updating;
+
+    /// <summary>
+    /// Vérification des mises à jour (exception réseau décidée par le propriétaire) : automatique au
+    /// plus une fois par jour au lancement, ou sur demande depuis Paramètres. Rien n'est installé
+    /// sans l'accord de l'utilisateur.
+    /// </summary>
+    public async Task CheckForUpdatesAsync(bool manual)
+    {
+        if (!manual && (!App.Settings.AutoCheckUpdates || !UpdateRules.CheckDue(App.Settings.LastUpdateCheckUtc, DateTime.UtcNow)))
+        {
+            return;
+        }
+        ReleaseInfo? release;
+        try
+        {
+            release = await UpdateService.CheckAsync();
+        }
+        catch (Exception error) when (error is System.Net.Http.HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            if (manual)
+            {
+                Optivance.Desktop.Storage.ConfirmDialog.Inform(this, "Vérification impossible", $"Impossible de joindre GitHub (pas de connexion internet ?).\n\n{error.Message}");
+            }
+            return;
+        }
+        App.Settings.LastUpdateCheckUtc = DateTime.UtcNow;
+        App.Settings.Save();
+        if (release is null)
+        {
+            if (manual)
+            {
+                Optivance.Desktop.Storage.ConfirmDialog.Inform(this, "OPTIVANCE est à jour", $"Vous utilisez la dernière version ({UpdateService.CurrentVersion.ToString(3)}).");
+            }
+            return;
+        }
+        _pendingRelease = release;
+        if (manual)
+        {
+            await OfferUpdateAsync();
+        }
+        else
+        {
+            _tray.ShowBalloonTip(8000, $"OPTIVANCE {release.Version.ToString(3)} est disponible",
+                "Cliquez ici pour voir les nouveautés et mettre à jour en un clic.", Forms.ToolTipIcon.Info);
+        }
+    }
+
+    private async Task OfferUpdateAsync()
+    {
+        if (_pendingRelease is not { } release || _updating)
+        {
+            return;
+        }
+        ShowFromTray();
+        var notes = release.Notes.Length > 900 ? release.Notes[..900] + "…" : release.Notes;
+        if (!Optivance.Desktop.Storage.ConfirmDialog.Ask(this, $"Mettre à jour vers OPTIVANCE {release.Version.ToString(3)} ?",
+                $"{notes}\n\nOPTIVANCE va télécharger la nouvelle version ({release.ExeSize / 1048576.0:0} Mo), vérifier son empreinte, puis redémarrer. Vos paramètres et votre historique sont conservés.",
+                [("Version actuelle", UpdateService.CurrentVersion.ToString(3)), ("Nouvelle version", release.Version.ToString(3))], "Mettre à jour", danger: false))
+        {
+            return;
+        }
+        _updating = true;
+        var exe = Environment.ProcessPath!;
+        try
+        {
+            var progress = new Progress<double>(value => SetStatus($"Téléchargement de la mise à jour… {value:P0}"));
+            var downloaded = await UpdateService.DownloadAsync(release, progress);
+            SetStatus("Installation de la mise à jour…");
+            UpdateService.Install(downloaded, exe);
+            App.History.Add(HistoryCategory.Application, "Mise à jour", "OPTIVANCE", $"{UpdateService.CurrentVersion.ToString(3)} → {release.Version.ToString(3)}");
+            UpdateService.Restart(exe);
+            ExitApplication();
+        }
+        catch (Exception error) when (error is System.Net.Http.HttpRequestException or TaskCanceledException or System.IO.IOException or UnauthorizedAccessException or System.IO.InvalidDataException)
+        {
+            _updating = false;
+            SetStatus("Mise à jour annulée.");
+            App.History.Add(HistoryCategory.Application, "Mise à jour", "OPTIVANCE", error.Message, success: false);
+            var hint = error is UnauthorizedAccessException ? "\n\nLe dossier d’OPTIVANCE est protégé en écriture (par exemple Program Files) : déplacez OPTIVANCE.exe dans un dossier personnel (Bureau, Documents)." : "";
+            Optivance.Desktop.Storage.ConfirmDialog.Inform(this, "Mise à jour impossible", $"{error.Message}{hint}\n\nLa version actuelle continue de fonctionner.");
+        }
     }
 
     /// <summary>Paramètres › Désinstaller : restaure, nettoie puis ferme OPTIVANCE.</summary>

@@ -22,7 +22,7 @@ Emplacement depuis le 14/11/2026 : `docs/architecture/` (documents de la Phase 0
 
 - Six destinations, pas de Dashboard; accueil Storage; widget hors navigation, même processus (D-17).
 - Capteurs : API Windows documentées + bibliothèques constructeur présentes avec le pilote après revue de licence; ni pilote ni élévation; sinon « indisponible »; historique de performances en mémoire seulement (D-18).
-- Aucun cloud, compte, télémétrie, trafic réseau applicatif, service permanent, pilote noyau ni UAC au démarrage; helper élevé réservé au MFT.
+- Aucun cloud, compte, télémétrie, trafic réseau applicatif, service permanent, pilote noyau ni UAC au démarrage; helper élevé réservé au MFT. Exception décidée le 14/11/2026 : vérification des mises à jour sur GitHub (1×/jour, désactivable), voir `docs/governance/STORAGE_V1_DECISIONS.md`.
 - SQLite est une **recommandation**, pas une décision. D-16 (licence/distribution) est **ouvert**.
 
 ## Vocabulaire des statuts

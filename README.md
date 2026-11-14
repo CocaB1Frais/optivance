@@ -6,7 +6,7 @@
 
 <p align="center">
   Stockage · Monitoring · Widget FPS en jeu · Nettoyage · Optimisation<br>
-  <b>100 % local</b> — aucun compte, aucune connexion, aucune télémétrie.
+  <b>100 % local</b> — aucun compte, aucune télémétrie, vos données restent sur votre PC.
 </p>
 
 <p align="center">
@@ -64,7 +64,7 @@ Toutes les actions réalisées (suppressions, nettoyages, réglages), conservée
 
 ## Vos données restent chez vous
 
-- Aucune connexion réseau, aucun compte, aucune télémétrie, aucun service installé en permanence, aucun pilote.
+- Aucun compte, aucune télémétrie, aucun service installé en permanence, aucun pilote. Seule connexion : vérifier une fois par jour s'il existe une nouvelle version sur GitHub (désactivable).
 - Paramètres et historique : `%LOCALAPPDATA%\OPTIVANCE`, sur votre PC uniquement.
 - L'autorisation administrateur demandée au lancement (une fois par session) sert à l'analyse rapide des disques, au nettoyage approfondi, aux réglages système et aux FPS. Refusée : OPTIVANCE fonctionne en mode standard.
 
@@ -92,7 +92,7 @@ Au repos, environ 0,1 à 0,3 % du processeur ; la mesure des FPS elle-même est 
 
 ## Mise à jour et désinstallation
 
-- **Mise à jour** : téléchargez le nouvel `OPTIVANCE.exe` et remplacez l'ancien. Paramètres et historique sont conservés.
+- **Mise à jour** : automatique. OPTIVANCE vous prévient quand une nouvelle version sort ; un clic suffit pour l'installer et redémarrer (Paramètres › À propos › Rechercher, à tout moment). Paramètres et historique sont conservés.
 - **Désinstallation** : **Paramètres › Désinstallation**. OPTIVANCE restaure les réglages Windows qu'il a modifiés, retire ses intégrations, puis supprime l'application et ses données. Vos autres fichiers ne sont jamais touchés.
 
 **Configuration requise** : Windows 10 (1809+) ou Windows 11, 64 bits.

@@ -34,6 +34,11 @@ jobs:
       - name: Construction de la version portable
         shell: pwsh
         run: ./build.ps1 -Package
+      - name: Empreinte de l'exécutable (vérifiée par la mise à jour intégrée)
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash dist/OPTIVANCE/OPTIVANCE.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  OPTIVANCE.exe" | Set-Content dist/OPTIVANCE/OPTIVANCE.exe.sha256 -Encoding ascii
       - name: Notes de version (section du CHANGELOG)
         shell: pwsh
         run: |
@@ -45,7 +50,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" "dist/OPTIVANCE/OPTIVANCE.exe" "dist/OPTIVANCE-win-x64.zip" "dist/OPTIVANCE-win-x64.zip.sha256" `
+          gh release create "${{ github.ref_name }}" "dist/OPTIVANCE/OPTIVANCE.exe" "dist/OPTIVANCE/OPTIVANCE.exe.sha256" "dist/OPTIVANCE-win-x64.zip" "dist/OPTIVANCE-win-x64.zip.sha256" `
             --title "OPTIVANCE $env:VERSION" --notes-file notes.md
       - name: Application à la racine du dépôt (comme le dossier local)
         shell: pwsh
