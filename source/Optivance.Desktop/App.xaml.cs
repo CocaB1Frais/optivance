@@ -31,6 +31,25 @@ public partial class App : Application
 
         // Une seule instance : relancer OPTIVANCE réaffiche la fenêtre existante.
         _instance = new Mutex(initiallyOwned: true, InstanceName, out var first);
+        if (!first && e.Args.Contains("--updated"))
+        {
+            // Relance après une mise à jour : attendre que l'ancienne version ait fini de se fermer.
+            for (var attempt = 0; attempt < 40 && !first; attempt++)
+            {
+                try
+                {
+                    first = _instance.WaitOne(500);
+                }
+                catch (AbandonedMutexException)
+                {
+                    first = true;
+                }
+            }
+        }
+        if (first && Environment.ProcessPath is { } running)
+        {
+            _ = Task.Run(() => UpdateService.CleanupOld(running));
+        }
         if (e.Args.Contains("--uninstall"))
         {
             // « Desinstaller OPTIVANCE.cmd » : aucune fenêtre principale, aucune demande d'élévation au démarrage.

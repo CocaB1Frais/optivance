@@ -115,7 +115,9 @@ public sealed class SettingsPage : UserControl
         }
         else
         {
-            Action(about, $"OPTIVANCE {version} — rechercher une mise à jour", "Ouvrir la page des versions", () =>
+            Action(about, $"OPTIVANCE {version} — rechercher une mise à jour", "Rechercher", () => _ = _owner.CheckForUpdatesAsync(manual: true));
+            Toggle(about, "Vérifier les mises à jour automatiquement", "Au lancement, au plus une fois par jour : une seule requête à GitHub, aucune donnée personnelle envoyée. Rien n’est installé sans votre accord.", S.AutoCheckUpdates, value => S.AutoCheckUpdates = value);
+            Action(about, "Page des versions et nouveautés (GitHub)", "Ouvrir", () =>
                 Process.Start(new ProcessStartInfo(releases) { UseShellExecute = true })?.Dispose());
         }
     }

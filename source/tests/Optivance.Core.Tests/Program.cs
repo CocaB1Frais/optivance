@@ -474,5 +474,17 @@ static List<ScanEntry> Sample() =>
     Check("jeu : moins de 20 images/s non détecté", !detector.Update(slow, t.AddSeconds(18)));
 }
 
+{
+    // Mises à jour : versions, fréquence, empreinte.
+    Check("maj : étiquettes lues", UpdateRules.ParseTag("v1.2.0") == new Version(1, 2, 0) && UpdateRules.ParseTag("1.2") == new Version(1, 2, 0) && UpdateRules.ParseTag("v2.0.1-beta") == new Version(2, 0, 1));
+    Check("maj : étiquette illisible", UpdateRules.ParseTag("latest") is null && UpdateRules.ParseTag("") is null);
+    Check("maj : plus récente", UpdateRules.IsNewer(new Version(1, 1, 1), new Version(1, 2, 0)) && UpdateRules.IsNewer(new Version(1, 1, 1, 0), new Version(1, 1, 2)));
+    Check("maj : même version ou plus ancienne", !UpdateRules.IsNewer(new Version(1, 1, 1, 0), new Version(1, 1, 1)) && !UpdateRules.IsNewer(new Version(1, 2, 0), new Version(1, 1, 9)));
+    var now = new DateTime(2026, 11, 14, 12, 0, 0, DateTimeKind.Utc);
+    Check("maj : vérification une fois par jour", UpdateRules.CheckDue(null, now) && !UpdateRules.CheckDue(now.AddHours(-3), now) && UpdateRules.CheckDue(now.AddHours(-25), now) && UpdateRules.CheckDue(now.AddDays(2), now));
+    var sha = new string('a', 64);
+    Check("maj : empreinte lue", UpdateRules.ParseSha256($"{sha.ToUpperInvariant()}  OPTIVANCE.exe\n") == sha && UpdateRules.ParseSha256("pas une empreinte") is null);
+}
+
 Console.WriteLine($"{passed} réussis, {failures} échoués");
 return failures == 0 ? 0 : 1;

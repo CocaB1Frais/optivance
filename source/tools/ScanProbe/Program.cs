@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using Optivance.Core;
 using Optivance.Infrastructure;
 
@@ -51,6 +51,30 @@ if (args.Length is 1 or 2 && args[0] == "--fps")
         var used = (helper.TotalProcessorTime - start).TotalSeconds / clock.Elapsed.TotalSeconds / Environment.ProcessorCount * 100;
         Console.WriteLine($"coût du composant pendant la mesure : {used:0.00} % du processeur, mémoire {helper.PrivateMemorySize64 / 1048576.0:0.0} Mo");
     }
+    return 0;
+}
+
+// Mode mise à jour : chaîne complète contre la vraie version publiée, sur un fichier de test
+// (aucune application réelle remplacée, rien n'est relancé).
+if (args.Length == 2 && args[0] == "--update-test")
+{
+    var folder = Directory.CreateDirectory(args[1]).FullName;
+    var testExe = Path.Combine(folder, "OPTIVANCE.exe");
+    File.WriteAllText(testExe, "ancienne version factice");
+    var release = await UpdateService.CheckAsync(current: new Version(1, 0, 0));
+    Console.WriteLine(release is null ? "aucune version plus récente que 1.0.0 (inattendu)" : $"version trouvée : {release.Tag}, {release.ExeSize / 1048576.0:0.0} Mo, empreinte publiée : {release.ShaUrl is not null}");
+    if (release is null)
+    {
+        return 1;
+    }
+    var progressSteps = 0;
+    var downloaded = await UpdateService.DownloadAsync(release, new Progress<double>(_ => progressSteps++));
+    Console.WriteLine($"téléchargé et vérifié : {new FileInfo(downloaded).Length / 1048576.0:0.0} Mo ({progressSteps} étapes de progression)");
+    UpdateService.Install(downloaded, testExe);
+    Console.WriteLine($"remplacé : {new FileInfo(testExe).Length / 1048576.0:0.0} Mo ; ancien conservé pour suppression : {File.Exists(testExe + UpdateService.OldSuffix)}");
+    UpdateService.CleanupOld(testExe);
+    Console.WriteLine($"ancien supprimé : {!File.Exists(testExe + UpdateService.OldSuffix)}");
+    Console.WriteLine($"déjà à jour si l'on est en {release.Tag} : {await UpdateService.CheckAsync(current: release.Version) is null}");
     return 0;
 }
 

@@ -16,6 +16,9 @@ public sealed class AppSettings
     public bool StartHiddenInTray { get; set; }
     /// <summary>L'entrée du clic droit du Bureau a déjà été ajoutée une fois (premier lancement) : ne plus la rajouter.</summary>
     public bool DesktopMenuOffered { get; set; }
+    /// <summary>Vérifier les mises à jour sur GitHub au lancement (au plus une fois par jour).</summary>
+    public bool AutoCheckUpdates { get; set; } = true;
+    public DateTime? LastUpdateCheckUtc { get; set; }
 
     // Storage
     public bool ConfirmDeletion { get; set; } = true;

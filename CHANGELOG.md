@@ -1,5 +1,10 @@
 ﻿# Journal des versions
 
+## 1.2.0 — 2026-11-14
+
+- **Mise à jour intégrée** : OPTIVANCE vérifie s'il existe une nouvelle version (au plus une fois par jour, désactivable dans Paramètres › À propos) et la propose ; un clic suffit pour la télécharger, la vérifier (empreinte SHA-256) et redémarrer, sans repasser par GitHub. Paramètres et historique conservés.
+- Seule connexion de l'application : une requête à GitHub pour connaître la dernière version, sans aucune donnée personnelle.
+
 ## 1.1.1 — 2026-11-14
 
 - **Clic droit du Bureau** : l'entrée « OPTIVANCE » est ajoutée au premier lancement et annoncée par une notification ; désactivable dans Paramètres › Stockage (jamais rajoutée ensuite) ; mise à jour si l'application est déplacée.

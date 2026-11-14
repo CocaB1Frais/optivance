@@ -89,3 +89,12 @@ Mesures : widget seul (fenêtre fermée) 0,10 % du processeur en moyenne sur 20 
 - Conforme à D-18 (bibliothèque constructeur présente avec le pilote, sans pilote ajouté ni élévation).
 - Vérifié réellement sur la puce graphique intégrée d'un Ryzen 5 9600X (température graphique 41 °C, consommation, fréquence) ; carte AMD dédiée non testée (aucune disponible).
 - NVML (NVIDIA) : même principe ; revue de licence formelle toujours à consigner.
+
+## Mise à jour intégrée — exception à « aucun trafic réseau » (14/11/2026)
+
+Décision du propriétaire, après exposé des conséquences (dépendance à GitHub, IP visible par GitHub, confiance dans le compte de publication) :
+
+- OPTIVANCE interroge l'API GitHub des versions (`CocaB1Frais/optivance`) **au plus une fois par jour, au lancement** (désactivable dans Paramètres), et sur demande (Paramètres › À propos).
+- Aucune donnée envoyée hormis la requête elle-même (pas d'identifiant, pas de télémétrie).
+- Une nouvelle version est **proposée** (notification) ; l'installation se fait **en un clic, au choix de l'utilisateur** : téléchargement, vérification SHA-256 contre l'empreinte publiée, remplacement de l'exécutable, relance. En cas d'échec, l'ancienne version reste en place.
+- Recommandation au propriétaire : double authentification sur le compte GitHub (la chaîne de mise à jour lui fait confiance).
