@@ -2,7 +2,7 @@
   Construit OPTIVANCE (version portable : aucun installateur, .NET inclus).
 
   Résultat :
-    OPTIVANCE.exe + moteur\            ← à la racine de ce dossier : double-clic pour lancer
+    OPTIVANCE.exe                      ← à la racine de ce dossier : un seul fichier, moteur intégré
     dist\OPTIVANCE-win-x64.zip         ← à distribuer (publié automatiquement dans GitHub Releases)
     dist\OPTIVANCE-win-x64.zip.sha256
 
@@ -37,15 +37,13 @@ dotnet publish (Join-Path $source 'Optivance.Desktop') -c Release -r win-x64 --s
     --source https://api.nuget.org/v3/index.json  # paquets d'exécution .NET officiels (Microsoft, MIT), pour cette commande seulement
 if ($LASTEXITCODE -ne 0) { throw 'Échec de la publication.' }
 
-# Contenu attendu : OPTIVANCE.exe seul + dossier moteur.
+# Contenu attendu : OPTIVANCE.exe (moteur intégré) + raccourci de désinstallation.
 Get-ChildItem $app -File -Filter *.pdb | Remove-Item -Force
 # Raccourci de désinstallation, à côté de l'application.
 "@echo off`r`nstart """" ""%~dp0OPTIVANCE.exe"" --uninstall`r`n" | Set-Content (Join-Path $app 'Desinstaller OPTIVANCE.cmd') -Encoding ascii -NoNewline
 $unexpected = Get-ChildItem $app -File | Where-Object Name -notin 'OPTIVANCE.exe', 'Desinstaller OPTIVANCE.cmd'
 if ($unexpected) { throw "Fichiers inattendus : $($unexpected.Name -join ', ')" }
-foreach ($engine in 'optivance-engine.exe', 'optivance-mft-helper.exe') {
-    if (-not (Test-Path (Join-Path $app "moteur\$engine"))) { throw "Moteur manquant : moteur\$engine" }
-}
+if (Get-ChildItem $app -Directory) { throw "Dossier inattendu dans la publication : $((Get-ChildItem $app -Directory).Name -join ', ')" }
 
 # Archive à distribuer (nom fixe : le lien « Télécharger » du README vise toujours la dernière version).
 if ($Package) {
@@ -61,8 +59,13 @@ if ($Package) {
 if (-not $env:CI) {
     try {
         Copy-Item (Join-Path $app 'OPTIVANCE.exe') $root -Force
-        Copy-Item (Join-Path $app 'moteur') $root -Recurse -Force
+        # Ancien dossier « moteur » (versions ≤ 1.0.3) : remplacé par le moteur intégré.
+        Remove-Item (Join-Path $root 'moteur') -Recurse -Force -ErrorAction SilentlyContinue
         Copy-Item (Join-Path $app 'Desinstaller OPTIVANCE.cmd') $root -Force
+        # Versions publiées par GitHub à la racine du dépôt : la copie locale ne doit pas apparaître comme modifiée.
+        foreach ($published in 'OPTIVANCE.exe', 'Desinstaller OPTIVANCE.cmd') {
+            if (git -C $root ls-files -- $published) { git -C $root update-index --skip-worktree -- $published }
+        }
         Write-Host "Prêt : $(Join-Path $root 'OPTIVANCE.exe')" -ForegroundColor Green
     }
     catch {

@@ -36,6 +36,9 @@ public partial class MainWindow : Window
 
         _tray = CreateTray();
         _alerts = new Monitoring.AlertService((title, message) => _tray.ShowBalloonTip(5000, title, message, Forms.ToolTipIcon.Warning));
+        _fps = new Monitoring.FpsProvider(() => _storagePage.Session);
+        Infrastructure.Monitoring.SystemMonitor.Shared.FpsSource = _fps.Read;
+        _fps.GameChanged += game => Dispatcher.BeginInvoke(() => OnGameChanged(game));
         _hotkeys = new Monitoring.GlobalHotkeys(this);
         RegisterHotkeys();
         SettingsPage.SettingsChanged += () =>
@@ -60,6 +63,10 @@ public partial class MainWindow : Window
 
     private readonly Monitoring.GlobalHotkeys _hotkeys;
     private readonly Monitoring.AlertService _alerts;
+    private readonly Monitoring.FpsProvider _fps;
+
+    /// <summary>FPS mesurables (autorisation administrateur accordée pour la session).</summary>
+    public bool FpsAvailable => _fps.Available;
 
     /// <summary>Ouvre une page (depuis le widget ou la zone de notification).</summary>
     public void OpenPage(string destination)
@@ -85,6 +92,44 @@ public partial class MainWindow : Window
         if (refused.Count > 0)
         {
             SetStatus($"Raccourci indisponible (déjà utilisé par une autre application ?) : {string.Join(", ", refused)}");
+        }
+    }
+
+    /// <summary>Widget affiché automatiquement pour le jeu en cours (masqué en sortant du jeu).</summary>
+    private bool _autoShown;
+    private string? _exclusiveHintFor;
+
+    [System.Runtime.InteropServices.DllImport("shell32.dll")]
+    private static extern int SHQueryUserNotificationState(out int state);
+
+    private void OnGameChanged(string? game)
+    {
+        if (game is not null)
+        {
+            if (!App.Settings.WidgetAutoShowInGames || _widget is { IsVisible: true })
+            {
+                return;
+            }
+            _widget ??= new Monitoring.WidgetWindow();
+            _widget.ApplySettings();
+            _widget.Show();
+            _autoShown = true;
+            App.History.Add(HistoryCategory.Monitoring, "Jeu détecté", game, "widget affiché automatiquement");
+            // Plein écran exclusif : Windows n'affiche aucune fenêtre par-dessus (pas d'injection, décision du propriétaire).
+            if (SHQueryUserNotificationState(out var state) == 0 && state == 3 /* QUNS_RUNNING_D3D_FULL_SCREEN */ && _exclusiveHintFor != game)
+            {
+                _exclusiveHintFor = game;
+                _tray.ShowBalloonTip(6000, "Widget masqué par le plein écran exclusif",
+                    $"{game} est en plein écran exclusif : Windows n’y affiche aucune fenêtre. Choisissez « plein écran fenêtré » ou « sans bordure » dans ses options d’affichage pour voir le widget.", Forms.ToolTipIcon.Info);
+            }
+        }
+        else if (_autoShown)
+        {
+            _autoShown = false;
+            if (!App.Settings.WidgetVisible)
+            {
+                _widget?.Hide();
+            }
         }
     }
 
@@ -258,6 +303,7 @@ public partial class MainWindow : Window
         _tray.Dispose();
         _hotkeys.Dispose();
         _alerts.Dispose();
+        _fps.Dispose();
         _widget?.Close();
         Infrastructure.Monitoring.SystemMonitor.Shared.Dispose();
         // Fermeture du composant élevé hors du fil d'interface (pas d'interblocage), 3 s au plus.

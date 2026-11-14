@@ -17,10 +17,10 @@ public sealed class MftScanClient
     public const string HelperFileName = "optivance-mft-helper.exe";
     private const int ErrorCancelled = 1223;
 
-    public static string HelperPath => Path.Combine(EngineFolder, HelperFileName);
+    public static string HelperPath => EngineFiles.Prepare(HelperFileName);
 
-    /// <summary>Sous-dossier des exécutables du moteur, à côté d'OPTIVANCE.exe (seul fichier visible à la racine).</summary>
-    public static string EngineFolder => Path.Combine(AppContext.BaseDirectory, "moteur");
+    /// <summary>Dossier des exécutables du moteur (extraits d'OPTIVANCE.exe et vérifiés).</summary>
+    public static string EngineFolder => EngineFiles.Folder;
 
     public static bool IsHelperPresent => File.Exists(HelperPath);
 
@@ -408,6 +408,57 @@ public sealed class MftSession : IAsyncDisposable
         {
             _gate.Release();
         }
+    }
+
+    /// <summary>
+    /// Petite requête au composant (FPS) : n'attend pas si une analyse ou un nettoyage occupe le
+    /// canal (renvoie null). Réponse = première ligne commençant par <paramref name="responsePrefix"/>.
+    /// </summary>
+    private async Task<System.Text.Json.JsonDocument?> TryRequestAsync(string command, string responsePrefix)
+    {
+        if (!IsActive || !await _gate.WaitAsync(0))
+        {
+            return null;
+        }
+        try
+        {
+            await _pipe.WriteAsync(Encoding.ASCII.GetBytes(command + "\n"));
+            await _pipe.FlushAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var prefix = Encoding.ASCII.GetBytes(responsePrefix);
+            while (await _reader.ReadLineAsync(timeout.Token) is { } line)
+            {
+                if (line.Span.StartsWith(prefix))
+                {
+                    return System.Text.Json.JsonDocument.Parse(line);
+                }
+            }
+            _broken = true;
+            return null;
+        }
+        catch (Exception exception) when (exception is IOException or OperationCanceledException or System.Text.Json.JsonException or ObjectDisposedException)
+        {
+            _broken = true;
+            return null;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>Démarre la mesure des FPS (session ETW du composant). Vrai si elle tourne.</summary>
+    public async Task<bool> StartFpsAsync()
+    {
+        using var reply = await TryRequestAsync("{\"v\":3,\"type\":\"fps-start\"}", "{\"v\":3,\"type\":\"fps-started\"");
+        return reply is not null && reply.RootElement.GetProperty("ok").GetBoolean();
+    }
+
+    /// <summary>FPS actuels d'un processus (null : rien d'affiché, canal occupé ou mesure arrêtée).</summary>
+    public async Task<double?> QueryFpsAsync(int processId)
+    {
+        using var reply = await TryRequestAsync($"{{\"v\":3,\"type\":\"fps-query\",\"pid\":{processId}}}", "{\"v\":3,\"type\":\"fps\"");
+        return reply?.RootElement.GetProperty("fps") is { ValueKind: System.Text.Json.JsonValueKind.Number } value ? value.GetDouble() : null;
     }
 
     private static readonly System.Text.Json.JsonSerializerOptions ReportOptions = new() { PropertyNameCaseInsensitive = true };

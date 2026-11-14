@@ -451,5 +451,28 @@ static List<ScanEntry> Sample() =>
     }
 }
 
+{
+    // Détection automatique des jeux (widget en jeu).
+    var detector = new GameDetector();
+    var t = new DateTime(2026, 11, 14, 12, 0, 0);
+    var game = new ForegroundSample(100, "javaw", Fullscreen: true, Fps: 144);
+    Check("jeu : un seul relevé ne suffit pas", !detector.Update(game, t) && detector.GameProcessId is null);
+    Check("jeu : détecté au deuxième relevé", detector.Update(game, t.AddSeconds(1)) && detector.GameProcessId == 100 && detector.GameName == "javaw");
+    Check("jeu : écran de chargement toléré", !detector.Update(game with { Fps = null }, t.AddSeconds(4)) && detector.GameProcessId == 100);
+    Check("jeu : quitté après le délai sans images", detector.Update(game with { Fps = null }, t.AddSeconds(9)) && detector.GameProcessId is null);
+    detector.Update(game, t.AddSeconds(10));
+    detector.Update(game, t.AddSeconds(11));
+    Check("jeu : alt-tab = sortie immédiate", detector.Update(new ForegroundSample(5, "Discord", false, null), t.AddSeconds(12)) && detector.GameProcessId is null);
+    var browser = new ForegroundSample(7, "chrome", true, 60);
+    detector.Update(browser, t.AddSeconds(13));
+    Check("jeu : navigateur plein écran exclu", !detector.Update(browser, t.AddSeconds(14)) && detector.GameProcessId is null);
+    var windowed = game with { Fullscreen = false };
+    detector.Update(windowed, t.AddSeconds(15));
+    Check("jeu : fenêtré non détecté", !detector.Update(windowed, t.AddSeconds(16)) && detector.GameProcessId is null);
+    var slow = game with { Fps = 12 };
+    detector.Update(slow, t.AddSeconds(17));
+    Check("jeu : moins de 20 images/s non détecté", !detector.Update(slow, t.AddSeconds(18)));
+}
+
 Console.WriteLine($"{passed} réussis, {failures} échoués");
 return failures == 0 ? 0 : 1;

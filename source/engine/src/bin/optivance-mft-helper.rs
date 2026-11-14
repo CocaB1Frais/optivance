@@ -1,4 +1,4 @@
-//! Helper MFT d'OPTIVANCE (D-06), lancé avec élévation UAC à chaque analyse MFT.
+﻿//! Helper MFT d'OPTIVANCE (D-06), lancé avec élévation UAC à chaque analyse MFT.
 //!
 //! - N'accepte qu'une lettre de volume et un nom de pipe au format de l'application.
 //! - Vérifie que le volume est NTFS et l'ouvre en lecture seule.
@@ -153,6 +153,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         HelperMode::Single(letter) => scan_volume(&mut channel, letter),
         HelperMode::Session => {
             // Composant de session : attend les commandes jusqu'à la fermeture de l'interface.
+            // Session ETW des FPS : arrêtée automatiquement à la sortie de cette boucle (Drop).
+            let mut fps: Option<optivance_engine::fps::sys::FpsSession> = None;
             while let Some(line) = next_command(&mut channel)? {
                 match parse_session_command(&line) {
                     SessionCommand::Scan(letter) => {
@@ -167,6 +169,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     SessionCommand::Tune(command) => {
                         let code = optivance_engine::tune::execute(&command);
                         send(&mut channel.writer, &mut channel.profile, &optivance_engine::tune::result_json(code))?;
+                    }
+                    SessionCommand::FpsStart => {
+                        let code = match &fps {
+                            Some(_) => 0,
+                            None => match optivance_engine::fps::sys::FpsSession::start() {
+                                Ok(session) => {
+                                    fps = Some(session);
+                                    0
+                                }
+                                Err(code) => code as i64,
+                            },
+                        };
+                        send(&mut channel.writer, &mut channel.profile, &format!("{{\"v\":3,\"type\":\"fps-started\",\"ok\":{},\"code\":{code}}}", code == 0))?;
+                    }
+                    SessionCommand::FpsQuery(pid) => {
+                        let value = if fps.is_some() { optivance_engine::fps::sys::query(pid) } else { None };
+                        send(&mut channel.writer, &mut channel.profile, &optivance_engine::fps::result_json(pid, value, fps.is_some()))?;
                     }
                     SessionCommand::Quit => break,
                     SessionCommand::Unknown => {}

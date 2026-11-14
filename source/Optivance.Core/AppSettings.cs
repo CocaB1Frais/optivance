@@ -38,6 +38,8 @@ public sealed class AppSettings
     public bool WidgetShowDisk { get; set; }
     /// <summary>Widget réduit : une seule ligne, sans titre.</summary>
     public bool WidgetCompact { get; set; }
+    /// <summary>Le widget apparaît seul quand un jeu plein écran est au premier plan, et disparaît après.</summary>
+    public bool WidgetAutoShowInGames { get; set; } = true;
 
     // Alertes (notification Windows, couleur dans le widget, son)
     public bool AlertCpuTemperature { get; set; } = true;
