@@ -14,6 +14,8 @@ public sealed class AppSettings
     public bool CloseToTray { get; set; } = true;
     public bool StartWithWindows { get; set; }
     public bool StartHiddenInTray { get; set; }
+    /// <summary>L'entrée du clic droit du Bureau a déjà été ajoutée une fois (premier lancement) : ne plus la rajouter.</summary>
+    public bool DesktopMenuOffered { get; set; }
 
     // Storage
     public bool ConfirmDeletion { get; set; } = true;

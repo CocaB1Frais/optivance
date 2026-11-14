@@ -35,6 +35,9 @@ Le fichier se range où vous voulez (Bureau, Documents, clé USB).
 
 ### 💾 Stockage — voir ce qui remplit vos disques
 Analyse d'un disque entier en quelques secondes grâce à la lecture directe de la table NTFS (comme WizTree), arborescence, carte visuelle interactive, types de fichiers, **gros fichiers et doublons** (vérifiés par leur contenu). Suppression vers la Corbeille, avec confirmation.
+Accessible aussi par **clic droit sur le Bureau › OPTIVANCE** (désactivable dans Paramètres).
+
+<p align="center"><img src="docs/images/stockage.png" alt="Stockage" width="860"></p>
 
 ### 📊 Monitoring et widget FPS
 Processeur, carte graphique (NVIDIA et AMD), mémoire, disques, réseau et températures, sans pilote.

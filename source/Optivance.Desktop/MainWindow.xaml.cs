@@ -35,6 +35,11 @@ public partial class MainWindow : Window
         }
 
         _tray = CreateTray();
+        if (App.DesktopMenuJustAdded)
+        {
+            Loaded += (_, _) => _tray.ShowBalloonTip(7000, "Nouveau : OPTIVANCE dans le clic droit du Bureau",
+                "Clic droit sur le Bureau › OPTIVANCE (sous Windows 11 : « Afficher plus d’options »). Vous pouvez le retirer dans Paramètres › Stockage.", Forms.ToolTipIcon.Info);
+        }
         _alerts = new Monitoring.AlertService((title, message) => _tray.ShowBalloonTip(5000, title, message, Forms.ToolTipIcon.Warning));
         _fps = new Monitoring.FpsProvider(() => _storagePage.Session);
         Infrastructure.Monitoring.SystemMonitor.Shared.FpsSource = _fps.Read;

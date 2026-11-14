@@ -10,8 +10,15 @@ namespace Optivance.Desktop;
 
 public partial class App : Application
 {
-    private const string InstanceName = @"Local\OPTIVANCE-instance";
-    private const string ShowSignalName = @"Local\OPTIVANCE-show";
+    // Copie de test (OPTIVANCE_DATA_DIR) : instance distincte, pour ne jamais déranger l'application en cours.
+    private static readonly string Suffix = Environment.GetEnvironmentVariable("OPTIVANCE_DATA_DIR") is { Length: > 0 } test
+        ? "-" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(test.ToUpperInvariant())))[..12]
+        : "";
+    private static readonly string InstanceName = @"Local\OPTIVANCE-instance" + Suffix;
+    private static readonly string ShowSignalName = @"Local\OPTIVANCE-show" + Suffix;
+
+    /// <summary>Entrée du clic droit du Bureau ajoutée à ce lancement (notification à afficher).</summary>
+    public static bool DesktopMenuJustAdded { get; private set; }
     private Mutex? _instance;
     private EventWaitHandle? _showSignal;
 
@@ -63,6 +70,7 @@ public partial class App : Application
         AppDomain.CurrentDomain.UnhandledException += (_, args) => Log(args.ExceptionObject as Exception);
 
         Settings = AppSettings.Load();
+        PrepareDesktopMenu();
         var arguments = e.Args;
         var scanIndex = Array.IndexOf(arguments, "--scan");
         var scanTarget = scanIndex >= 0 && scanIndex + 1 < arguments.Length ? arguments[scanIndex + 1] : null;
@@ -100,6 +108,42 @@ public partial class App : Application
                 Dispatcher.BeginInvoke(() => (MainWindow as MainWindow)?.ShowFromTray());
             }
         });
+    }
+
+    /// <summary>
+    /// Clic droit du Bureau : ajouté au premier lancement pour que chacun découvre la fonction
+    /// (décision du propriétaire du 14/11/2026), annoncé par une notification, désactivable dans
+    /// Paramètres ; jamais rajouté ensuite. Mis à jour si l'application a été déplacée. Aucune
+    /// écriture pour une copie de test (OPTIVANCE_DATA_DIR).
+    /// </summary>
+    private static void PrepareDesktopMenu()
+    {
+        if (Suffix.Length > 0)
+        {
+            return;
+        }
+        try
+        {
+            if (!Settings.DesktopMenuOffered)
+            {
+                if (!ShellIntegration.IsRegistered())
+                {
+                    ShellIntegration.Register();
+                    DesktopMenuJustAdded = true;
+                    History.Add(HistoryCategory.Settings, "Paramètre modifié", "« OPTIVANCE » dans le clic droit du Bureau", "ajouté au premier lancement");
+                }
+                Settings.DesktopMenuOffered = true;
+                Settings.Save();
+            }
+            else
+            {
+                ShellIntegration.RefreshIfMoved();
+            }
+        }
+        catch (Exception error) when (error is UnauthorizedAccessException or System.Security.SecurityException or IOException)
+        {
+            // Registre inaccessible : la fonction reste disponible depuis Paramètres.
+        }
     }
 
     /// <summary>Filet de sécurité : une erreur inattendue est journalisée et signalée, l'application continue.</summary>
