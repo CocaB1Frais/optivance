@@ -97,6 +97,10 @@ public partial class MainWindow : Window
 
     /// <summary>Widget affiché automatiquement pour le jeu en cours (masqué en sortant du jeu).</summary>
     private bool _autoShown;
+    private string? _exclusiveHintFor;
+
+    [System.Runtime.InteropServices.DllImport("shell32.dll")]
+    private static extern int SHQueryUserNotificationState(out int state);
 
     private void OnGameChanged(string? game)
     {
@@ -111,6 +115,13 @@ public partial class MainWindow : Window
             _widget.Show();
             _autoShown = true;
             App.History.Add(HistoryCategory.Monitoring, "Jeu détecté", game, "widget affiché automatiquement");
+            // Plein écran exclusif : Windows n'affiche aucune fenêtre par-dessus (pas d'injection, décision du propriétaire).
+            if (SHQueryUserNotificationState(out var state) == 0 && state == 3 /* QUNS_RUNNING_D3D_FULL_SCREEN */ && _exclusiveHintFor != game)
+            {
+                _exclusiveHintFor = game;
+                _tray.ShowBalloonTip(6000, "Widget masqué par le plein écran exclusif",
+                    $"{game} est en plein écran exclusif : Windows n’y affiche aucune fenêtre. Choisissez « plein écran fenêtré » ou « sans bordure » dans ses options d’affichage pour voir le widget.", Forms.ToolTipIcon.Info);
+            }
         }
         else if (_autoShown)
         {
