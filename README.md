@@ -1,6 +1,10 @@
-# OPTIVANCE
+﻿<p align="center"><img src="source/Optivance.Desktop/Assets/logo.png" alt="OPTIVANCE" height="64"></p>
 
-Utilitaire Windows tout-en-un, **100 % local** : aucune connexion, aucun compte, aucune télémétrie.
+<p align="center">
+  <a href="https://github.com/CocaB1Frais/optivance/releases/latest/download/OPTIVANCE-win-x64.zip"><img src="https://img.shields.io/badge/T%C3%A9l%C3%A9charger-OPTIVANCE%20pour%20Windows-2E765C?style=for-the-badge&logo=windows&logoColor=white" alt="Télécharger OPTIVANCE"></a>
+</p>
+
+<p align="center">Utilitaire Windows tout-en-un, <b>100 % local</b> : aucune connexion, aucun compte, aucune télémétrie.</p>
 
 | Module | Ce qu'il fait |
 |---|---|
@@ -12,7 +16,7 @@ Utilitaire Windows tout-en-un, **100 % local** : aucune connexion, aucun compte,
 
 ## Installation
 
-1. Télécharger `OPTIVANCE-x.y.z-win-x64.zip` depuis la page **Releases**.
+1. Cliquer sur **Télécharger** ci-dessus (ou page **Releases**) : `OPTIVANCE-win-x64.zip`.
 2. Extraire le dossier où vous voulez (Bureau, Documents, clé USB…).
 3. Lancer **`OPTIVANCE.exe`**.
 
@@ -38,18 +42,18 @@ Supprimer le dossier d'OPTIVANCE, et `%LOCALAPPDATA%\OPTIVANCE` pour effacer par
 
 | Dossier | Contenu |
 |---|---|
-| `src/Optivance.Core` | Logique pure (tests automatiques) |
-| `src/Optivance.Infrastructure` | Accès Windows, client du moteur, composant administrateur |
-| `src/Optivance.Desktop` | Interface WPF (.NET 10) |
-| `engine/` | Moteur Rust : analyse classique, lecture MFT, composant administrateur de session |
-| `tests/` | Tests automatiques |
-| `tools/ScanProbe` | Outil de mesure et de diagnostic |
+| `source/Optivance.Desktop` | Interface WPF (.NET 10) |
+| `source/Optivance.Core` | Logique pure (tests automatiques) |
+| `source/Optivance.Infrastructure` | Accès Windows, client du moteur, composant administrateur |
+| `source/engine` | Moteur Rust : analyse classique, lecture MFT, composant administrateur de session |
+| `source/tests` | Tests automatiques |
+| `source/tools/ScanProbe` | Outil de mesure et de diagnostic |
 | `docs/` | Architecture, décisions, gouvernance, rapports de validation |
 
 Prérequis : SDK .NET 10, Rust (rustup, cible `x86_64-pc-windows-msvc`).
 
 ```powershell
-.\build.ps1          # tests puis version portable dans dist\OPTIVANCE\
+.\build.ps1          # tests puis OPTIVANCE.exe à la racine + zip dans dist\
 ```
 
 ### Publier une version

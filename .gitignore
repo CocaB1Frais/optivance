@@ -15,3 +15,6 @@ graphify-out/
 
 # Version portable construite par build.ps1
 dist/
+# Application construite, copiée à la racine par build.ps1
+/OPTIVANCE.exe
+/moteur/

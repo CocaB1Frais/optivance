@@ -1,4 +1,10 @@
-# Journal des versions
+﻿# Journal des versions
+
+## 1.0.1 — 2026-11-14
+
+- Dépôt réorganisé : tout le code dans `source/`, racine réduite à l'essentiel.
+- Bouton « Télécharger » en tête de la page GitHub ; archive au nom fixe `OPTIVANCE-win-x64.zip`.
+- `build.ps1` place `OPTIVANCE.exe` directement à la racine du dossier.
 
 ## 1.0.0 — 2026-11-14
 
