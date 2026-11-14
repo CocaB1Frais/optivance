@@ -11,6 +11,8 @@
     <!-- Zone de notification (NotifyIcon) : fait partie de .NET Windows Desktop, aucune dépendance tierce. -->
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationIcon>Assets\optivance.ico</ApplicationIcon>
+    <!-- Interface en français : les traductions des autres langues de .NET (WPF, WinForms) ne sont pas embarquées. -->
+    <SatelliteResourceLanguages>fr</SatelliteResourceLanguages>
   </PropertyGroup>
   <!-- Moteur Rust. Cargo lit engine/.cargo/config.toml depuis son répertoire courant
        (pas depuis manifest-path) : il doit donc être lancé depuis engine/ pour appliquer

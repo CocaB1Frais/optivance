@@ -1,4 +1,4 @@
-namespace Optivance.Core;
+﻿namespace Optivance.Core;
 
 /// <summary>Mesure instantanée du système (valeurs null = indisponibles sur ce PC).</summary>
 public sealed record SystemSnapshot
@@ -76,4 +76,27 @@ public static class MonitoringMath
         }
         return any ? total : null;
     }
+    /// <summary>Température plausible (°C) ou null.</summary>
+    public static double? PlausibleCelsius(double value) => value is > 1 and < 130 ? value : null;
+
+    /// <summary>
+    /// Capteurs PMLog d'une carte AMD (Overdrive 8, indices d'adl_defines.h) : 8 = bord de la puce,
+    /// 27 = point chaud, 28 = graphique (puces intégrées), 32 = processeur (APU), 23 = consommation (W),
+    /// 1 = fréquence graphique (MHz), 19 = activité (%).
+    /// </summary>
+    public static AmdGpuSensors AmdPmLog(IReadOnlyList<int> supported, IReadOnlyList<int> values)
+    {
+        double? Read(int index) => index < supported.Count && index < values.Count && supported[index] != 0 ? values[index] : null;
+        var edge = Read(8) is { } e ? PlausibleCelsius(e) : null;
+        var hotspot = Read(27) is { } h ? PlausibleCelsius(h) : null;
+        var graphics = Read(28) is { } g ? PlausibleCelsius(g) : null;
+        var processor = Read(32) is { } p ? PlausibleCelsius(p) : null;
+        var power = Read(23) is { } w and > 0 and < 1000 ? w : (double?)null;
+        var clock = Read(1) is { } c and > 0 and < 10000 ? c : (double?)null;
+        var activity = Read(19) is { } a and >= 0 and <= 100 ? a : (double?)null;
+        return new AmdGpuSensors(edge ?? graphics ?? hotspot, hotspot, power, clock, activity, processor);
+    }
 }
+
+/// <summary>Mesures d'une carte AMD (null = non fournie par la carte).</summary>
+public sealed record AmdGpuSensors(double? TemperatureCelsius, double? HotspotCelsius, double? PowerWatts, double? ClockMhz, double? ActivityPercent, double? ProcessorCelsius = null);

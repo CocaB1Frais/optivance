@@ -1,5 +1,12 @@
 ﻿# Journal des versions
 
+## 1.0.2 — 2026-11-14
+
+- **Cartes AMD** : température, consommation, fréquence et activité via la bibliothèque ADL du pilote AMD (cartes dédiées et puces graphiques intégrées ; vérifié sur la puce intégrée d'un Ryzen 9600X).
+- Application plus légère (67 Mo au lieu de 73 Mo) : traductions inutilisées de .NET retirées.
+- `build.ps1` ne garde plus de copie en double ; option `-Clean` pour un dossier minimal.
+- Numéro de version affiché dans la barre latérale.
+
 ## 1.0.1 — 2026-11-14
 
 - Dépôt réorganisé : tout le code dans `source/`, racine réduite à l'essentiel.
