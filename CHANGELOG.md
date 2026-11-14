@@ -1,5 +1,11 @@
 ﻿# Journal des versions
 
+## 1.0.3 — 2026-11-14
+
+- **Désinstallation** en un clic : `Desinstaller OPTIVANCE.cmd` dans le dossier, ou Paramètres › Désinstallation (réglages restaurés, application et données supprimées, aucun autre fichier touché).
+- **Optimisation** et **Nettoyage** redessinés en cartes : onglets, recherche, filtre de risque, masquage des réglages appliqués, date d'application.
+- Barre de titre intégrée : plus de bande ni de trait, icônes réduire / agrandir / fermer dessinées.
+
 ## 1.0.2 — 2026-11-14
 
 - **Cartes AMD** : température, consommation, fréquence et activité via la bibliothèque ADL du pilote AMD (cartes dédiées et puces graphiques intégrées ; vérifié sur la puce intégrée d'un Ryzen 9600X).

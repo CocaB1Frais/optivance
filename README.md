@@ -34,7 +34,8 @@ Paramètres › À propos ouvre la page des versions dans le navigateur (l'appli
 
 ## Désinstallation
 
-Supprimer le dossier d'OPTIVANCE, et `%LOCALAPPDATA%\OPTIVANCE` pour effacer paramètres et historique. Si elles ont été activées : décocher « Lancer avec Windows » et l'entrée du clic droit du Bureau avant de supprimer.
+Double-cliquer sur **`Desinstaller OPTIVANCE.cmd`** dans le dossier de l'application, ou **Paramètres › Désinstallation › Désinstaller**.
+OPTIVANCE restaure les réglages Windows qu'il a modifiés, retire le lancement avec Windows et l'entrée du clic droit du Bureau, puis supprime l'application et ses données (`%LOCALAPPDATA%\OPTIVANCE`). Vos autres fichiers ne sont jamais touchés.
 
 ---
 

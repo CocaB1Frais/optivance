@@ -407,5 +407,49 @@ static List<ScanEntry> Sample() =>
     Check("AMD intégrée : température processeur si fournie", MonitoringMath.AmdPmLog(integrated, readings).ProcessorCelsius == 67);
 }
 
+{
+    // Désinstallation : le script ne supprime que les fichiers d'OPTIVANCE, jamais les autres.
+    var root = Path.Combine(Path.GetTempPath(), "optivance-uninstall-" + Guid.NewGuid().ToString("N"));
+    var app = Path.Combine(root, "Mes trucs (l'app)");
+    var data = Path.Combine(root, "data");
+    try
+    {
+        Directory.CreateDirectory(Path.Combine(app, "moteur"));
+        Directory.CreateDirectory(Path.Combine(data, "logs"));
+        foreach (var file in new[] { "OPTIVANCE.exe", UninstallScript.ShortcutName, @"moteur\optivance-engine.exe", @"moteur\optivance-mft-helper.exe", "photo-perso.jpg" })
+        {
+            File.WriteAllText(Path.Combine(app, file), "x");
+        }
+        File.WriteAllText(Path.Combine(data, "settings.json"), "{}");
+        File.WriteAllText(Path.Combine(data, @"logs\erreur.txt"), "x");
+        using var waiter = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", "/c ping -n 2 127.0.0.1 >nul") { CreateNoWindow = true, UseShellExecute = false })!;
+        var script = UninstallScript.Build(waiter.Id, Path.Combine(app, "OPTIVANCE.exe"), data);
+        using (var run = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe"),
+            $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {UninstallScript.Encode(script)}") { CreateNoWindow = true, UseShellExecute = false })!)
+        {
+            run.WaitForExit(30_000);
+        }
+        Check("désinstallation : fichiers d'OPTIVANCE supprimés", !File.Exists(Path.Combine(app, "OPTIVANCE.exe")) && !Directory.Exists(Path.Combine(app, "moteur")) && !File.Exists(Path.Combine(app, UninstallScript.ShortcutName)));
+        Check("désinstallation : données supprimées", !Directory.Exists(data));
+        Check("désinstallation : fichier personnel conservé", File.Exists(Path.Combine(app, "photo-perso.jpg")));
+        Check("désinstallation : dossier non vide conservé", Directory.Exists(app));
+        File.Delete(Path.Combine(app, "photo-perso.jpg"));
+        File.WriteAllText(Path.Combine(app, "OPTIVANCE.exe"), "x");
+        using (var again = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe"),
+            $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {UninstallScript.Encode(UninstallScript.Build(0, Path.Combine(app, "OPTIVANCE.exe"), data))}") { CreateNoWindow = true, UseShellExecute = false })!)
+        {
+            again.WaitForExit(30_000);
+        }
+        Check("désinstallation : dossier vide retiré", !Directory.Exists(app));
+    }
+    finally
+    {
+        if (Directory.Exists(root))
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+}
+
 Console.WriteLine($"{passed} réussis, {failures} échoués");
 return failures == 0 ? 0 : 1;

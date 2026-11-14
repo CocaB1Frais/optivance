@@ -100,6 +100,9 @@ public sealed class SettingsPage : UserControl
             Process.Start(new ProcessStartInfo("explorer.exe", $"\"{AppSettings.Folder}\"") { UseShellExecute = true })?.Dispose();
         });
 
+        var uninstall = Section("Désinstallation");
+        Action(uninstall, "Désinstaller OPTIVANCE de ce PC (réglages Windows restaurés, application et données supprimées)", "Désinstaller", () => _ = _owner.UninstallAsync());
+
         var about = Section("À propos");
         var version = typeof(App).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
             .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion.Split('+')[0] ?? "?";
