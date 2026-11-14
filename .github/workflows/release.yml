@@ -33,7 +33,7 @@ jobs:
         run: cargo test --release --locked
       - name: Construction de la version portable
         shell: pwsh
-        run: ./build.ps1
+        run: ./build.ps1 -Package
       - name: Notes de version (section du CHANGELOG)
         shell: pwsh
         run: |

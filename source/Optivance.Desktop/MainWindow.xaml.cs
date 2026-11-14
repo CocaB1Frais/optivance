@@ -19,6 +19,9 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         Window_StateChanged(this, EventArgs.Empty);
+        var version = typeof(App).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion.Split('+')[0];
+        VersionText.Text = $"OPTIVANCE {version}";
         _storagePage.StatusChanged += SetStatus;
         _storagePage.AttachSession(session, sessionError);
         _storagePage.SessionChanged += UpdateElevationStatus;

@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using Microsoft.Win32;
 using Optivance.Core;
 
@@ -28,6 +28,7 @@ public sealed class SystemMonitor : IDisposable
     private readonly List<Action<SystemSnapshot>> _subscribers = [];
     private PdhQuery? _pdh;
     private NvmlGpu? _nvidia;
+    private AdlGpu? _amd;
     private bool _nvidiaProbed;
     private Timer? _timer;
     private int _intervalMilliseconds = 1000;
@@ -107,6 +108,15 @@ public sealed class SystemMonitor : IDisposable
         }
     }
 
+    /// <summary>Diagnostic : lecture directe de la carte AMD (même si une carte NVIDIA est présente).</summary>
+    public static string ProbeAmd()
+    {
+        var log = new System.Text.StringBuilder();
+        using var gpu = AdlGpu.TryOpen(line => log.AppendLine(line));
+        log.AppendLine(gpu?.Read() is { } sensors ? sensors.ToString() : "aucune carte AMD lisible");
+        return log.ToString();
+    }
+
     private SystemSnapshot Measure()
     {
         if (_pdh is null)
@@ -123,6 +133,8 @@ public sealed class SystemMonitor : IDisposable
         {
             _nvidiaProbed = true;
             _nvidia = NvmlGpu.TryOpen();
+            // Carte AMD : seulement si aucune carte NVIDIA n'est lue (une seule carte affichée).
+            _amd = _nvidia is null ? AdlGpu.TryOpen() : null;
         }
         _pdh.Collect();
 
@@ -135,17 +147,18 @@ public sealed class SystemMonitor : IDisposable
         var nvidiaMemory = nvidia?.Memory;
         var dedicated = _pdh.Values(GpuDedicated).Sum(item => item.Value);
         var fps = FpsSource?.Invoke();
+        var amd = _amd?.Read();
 
         return new SystemSnapshot
         {
             CpuPercent = _pdh.Value(CpuUtility) is { } utility ? Math.Clamp(utility, 0, 100) : null,
             CpuFrequencyMhz = performance is { } p && baseFrequency is { } b ? b * p / 100 : baseFrequency,
-            ThermalCelsius = MonitoringMath.HottestZoneCelsius(_pdh.Values(Thermal).Select(item => item.Value)),
-            GpuName = nvidia?.Name,
-            GpuPercent = nvidia?.UtilizationPercent ?? MonitoringMath.Gpu3dPercent(_pdh.Values(GpuEngines)),
-            GpuCelsius = nvidia?.TemperatureCelsius,
-            GpuWatts = nvidia?.PowerWatts,
-            GpuClockMhz = nvidia?.CoreClockMhz,
+            ThermalCelsius = MonitoringMath.HottestZoneCelsius(_pdh.Values(Thermal).Select(item => item.Value)) ?? amd?.ProcessorCelsius,
+            GpuName = nvidia?.Name ?? (_amd is null ? null : "Carte graphique AMD"),
+            GpuPercent = nvidia?.UtilizationPercent ?? amd?.ActivityPercent ?? MonitoringMath.Gpu3dPercent(_pdh.Values(GpuEngines)),
+            GpuCelsius = nvidia?.TemperatureCelsius ?? amd?.TemperatureCelsius,
+            GpuWatts = nvidia?.PowerWatts ?? amd?.PowerWatts,
+            GpuClockMhz = nvidia?.CoreClockMhz ?? amd?.ClockMhz,
             GpuMemoryUsed = nvidiaMemory?.Used ?? (dedicated > 0 ? (ulong)dedicated : null),
             GpuMemoryTotal = nvidiaMemory?.Total,
             MemoryTotal = memory.TotalPhys,
@@ -184,6 +197,7 @@ public sealed class SystemMonitor : IDisposable
         }
         _pdh?.Dispose();
         _nvidia?.Dispose();
+        _amd?.Dispose();
     }
 
     private sealed class Subscription(SystemMonitor monitor, Action<SystemSnapshot> handler) : IDisposable

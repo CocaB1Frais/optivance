@@ -25,6 +25,13 @@ if (args.Length == 1 && args[0] == "--monitor")
     return 0;
 }
 
+// Mode AMD : lecture des capteurs via ADL (atiadlxx.dll du pilote AMD).
+if (args.Length == 1 && args[0] == "--amd")
+{
+    Console.WriteLine(Optivance.Infrastructure.Monitoring.SystemMonitor.ProbeAmd());
+    return 0;
+}
+
 // Mode doublons : analyse standard d'un dossier puis recherche (diagnostic de FileFinder).
 if (args.Length == 2 && args[0] == "--duplicates")
 {

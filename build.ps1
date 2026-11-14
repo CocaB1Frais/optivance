@@ -1,4 +1,4 @@
-<#
+﻿<#
   Construit OPTIVANCE (version portable : aucun installateur, .NET inclus).
 
   Résultat :
@@ -6,10 +6,12 @@
     dist\OPTIVANCE-win-x64.zip         ← à distribuer (publié automatiquement dans GitHub Releases)
     dist\OPTIVANCE-win-x64.zip.sha256
 
-  Usage : .\build.ps1            (tests puis construction)
+  Usage : .\build.ps1             tests puis OPTIVANCE.exe à la racine
+          .\build.ps1 -Package    + archive dist\OPTIVANCE-win-x64.zip (publication)
+          .\build.ps1 -Clean      + supprime ensuite tous les fichiers de compilation (dossier minimal)
           .\build.ps1 -SkipTests
 #>
-param([switch]$SkipTests)
+param([switch]$SkipTests, [switch]$Package, [switch]$Clean)
 $ErrorActionPreference = 'Stop'
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
 $root = $PSScriptRoot
@@ -44,11 +46,14 @@ foreach ($engine in 'optivance-engine.exe', 'optivance-mft-helper.exe') {
 }
 
 # Archive à distribuer (nom fixe : le lien « Télécharger » du README vise toujours la dernière version).
-$zip = Join-Path $dist 'OPTIVANCE-win-x64.zip'
-if (Test-Path $zip) { Remove-Item $zip -Force }
-Compress-Archive -Path $app -DestinationPath $zip -CompressionLevel Optimal
-$hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-"$hash  $(Split-Path $zip -Leaf)" | Set-Content "$zip.sha256" -Encoding ascii
+if ($Package) {
+    $zip = Join-Path $dist 'OPTIVANCE-win-x64.zip'
+    if (Test-Path $zip) { Remove-Item $zip -Force }
+    Compress-Archive -Path $app -DestinationPath $zip -CompressionLevel Optimal
+    $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+    "$hash  $(Split-Path $zip -Leaf)" | Set-Content "$zip.sha256" -Encoding ascii
+    Write-Host "Archive : $zip ($([math]::Round((Get-Item $zip).Length / 1MB, 1)) Mo)" -ForegroundColor Green
+}
 
 # Copie à la racine du dossier (non versionnée) pour lancer OPTIVANCE d'un double-clic.
 if (-not $env:CI) {
@@ -61,4 +66,16 @@ if (-not $env:CI) {
         Write-Warning "OPTIVANCE est ouvert : quittez-le (icône près de l'horloge › Quitter) puis relancez .\build.ps1 pour mettre à jour la copie à la racine."
     }
 }
-Write-Host "Archive : $zip ($([math]::Round((Get-Item $zip).Length / 1MB, 1)) Mo)" -ForegroundColor Green
+
+# Pas de copie en double : le dossier intermédiaire disparaît (l'archive reste si -Package).
+if (-not $Package -and (Test-Path $dist)) { Remove-Item $dist -Recurse -Force }
+
+# Dossier minimal : fichiers de compilation supprimés (recréés à la prochaine construction, ~2 min).
+if ($Clean) {
+    # Seulement bin/obj des projets .NET (jamais engine\src\bin, qui contient du code source Rust).
+    Get-ChildItem $source -Filter *.csproj -Recurse | ForEach-Object {
+        foreach ($output in 'bin', 'obj') { Remove-Item (Join-Path $_.DirectoryName $output) -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+    Remove-Item (Join-Path $source 'engine\target') -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host 'Fichiers de compilation supprimés.' -ForegroundColor Green
+}

@@ -376,5 +376,36 @@ static List<ScanEntry> Sample() =>
     }
 }
 
+{
+    // Carte AMD : lecture des capteurs PMLog (indices d'adl_defines.h).
+    var supported = new int[256];
+    var values = new int[256];
+    (supported[8], values[8]) = (1, 62);    // bord
+    (supported[27], values[27]) = (1, 78);  // point chaud
+    (supported[23], values[23]) = (1, 145); // consommation
+    (supported[1], values[1]) = (1, 2450);  // fréquence
+    (supported[19], values[19]) = (1, 97);  // activité
+    var amd = MonitoringMath.AmdPmLog(supported, values);
+    Check("AMD : capteurs lus", amd == new AmdGpuSensors(62, 78, 145, 2450, 97), amd.ToString());
+    supported[8] = 0;
+    Check("AMD : point chaud si bord absent", MonitoringMath.AmdPmLog(supported, values).TemperatureCelsius == 78);
+    values[27] = 0;
+    values[23] = 99999;
+    var absurd = MonitoringMath.AmdPmLog(supported, values);
+    Check("AMD : valeurs absurdes ignorées", absurd.TemperatureCelsius is null && absurd.PowerWatts is null);
+    Check("AMD : rien de fourni", MonitoringMath.AmdPmLog([], []) == new AmdGpuSensors(null, null, null, null, null));
+    // Puce intégrée (relevé réel d'un Ryzen 9600X) : pas de capteur « bord », température graphique (28).
+    var integrated = new int[256];
+    var readings = new int[256];
+    foreach (var (index, value) in new[] { (1, 600), (23, 85), (28, 41), (29, 44), (32, 0) })
+    {
+        (integrated[index], readings[index]) = (index == 32 ? 0 : 1, value);
+    }
+    var apu = MonitoringMath.AmdPmLog(integrated, readings);
+    Check("AMD intégrée : température graphique", apu.TemperatureCelsius == 41 && apu.ProcessorCelsius is null, apu.ToString());
+    (integrated[32], readings[32]) = (1, 67);
+    Check("AMD intégrée : température processeur si fournie", MonitoringMath.AmdPmLog(integrated, readings).ProcessorCelsius == 67);
+}
+
 Console.WriteLine($"{passed} réussis, {failures} échoués");
 return failures == 0 ? 0 : 1;

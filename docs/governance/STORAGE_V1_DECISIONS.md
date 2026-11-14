@@ -81,3 +81,11 @@ Mesures : widget seul (fenêtre fermée) 0,10 % du processeur en moyenne sur 20 
 1. D-06 : backend MFT retenu = lecture directe `$MFT`, secours FSCTL.
 2. D-11 / spécification Storage : suppression autorisée depuis Storage avec les garde-fous ci-dessus.
 3. D-10 : protocole local passé en v3 (lignes compactes, date de modification) ; helper MFT : arguments stricts, `SecurityIdentification`, PID + image vérifiés, `FILE_FLAG_FIRST_PIPE_INSTANCE`, DLL limitées à System32.
+
+## Capteurs AMD — revue de licence (14/11/2026)
+
+- Bibliothèque : `atiadlxx.dll` (AMD Display Library), installée avec le pilote AMD, chargée dynamiquement, **non redistribuée**.
+- En-têtes ADL (dépôt GPUOpen-LibrariesAndSDKs/display-library, `include/adl_sdk.h`) : **licence MIT**, © Advanced Micro Devices. Aucun fichier copié ; déclarations P/Invoke réécrites dans `AdlGpu.cs`.
+- Conforme à D-18 (bibliothèque constructeur présente avec le pilote, sans pilote ajouté ni élévation).
+- Vérifié réellement sur la puce graphique intégrée d'un Ryzen 5 9600X (température graphique 41 °C, consommation, fréquence) ; carte AMD dédiée non testée (aucune disponible).
+- NVML (NVIDIA) : même principe ; revue de licence formelle toujours à consigner.
