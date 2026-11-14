@@ -1,5 +1,10 @@
 ﻿# Journal des versions
 
+## 1.1.1 — 2026-11-14
+
+- **Clic droit du Bureau** : l'entrée « OPTIVANCE » est ajoutée au premier lancement et annoncée par une notification ; désactivable dans Paramètres › Stockage (jamais rajoutée ensuite) ; mise à jour si l'application est déplacée.
+- Nouvelles captures de la page de présentation (Stockage, Nettoyage, Optimisation, Monitoring), sans données personnelles.
+
 ## 1.1.0 — 2026-11-14
 
 - **FPS en jeu** pour tous les jeux (DirectX, OpenGL, Vulkan — vérifié sur Spider-Man 2 et Minecraft), lus dans les événements de Windows, sans injection ; coût mesuré inférieur à 0,01 % du processeur.

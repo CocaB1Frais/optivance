@@ -32,6 +32,17 @@ public static class ShellIntegration
         }
     }
 
+    /// <summary>L'application a été déplacée : l'entrée existante est réécrite vers le nouvel emplacement.</summary>
+    public static void RefreshIfMoved()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(KeyPath + @"\command");
+        if (key?.GetValue(null) is string command && Environment.ProcessPath is { } executable
+            && !string.Equals(command, $"\"{executable}\"", StringComparison.OrdinalIgnoreCase))
+        {
+            Register();
+        }
+    }
+
     public static void Unregister() => Registry.CurrentUser.DeleteSubKeyTree(KeyPath, throwOnMissingSubKey: false);
 
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
