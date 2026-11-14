@@ -21,6 +21,7 @@ public sealed class WidgetWindow : Window
     private readonly StackPanel _rows = new();
     private readonly Dictionary<string, TextBlock> _values = [];
     private IDisposable? _subscription;
+    private readonly System.Windows.Threading.DispatcherTimer _keepOnTop = new() { Interval = TimeSpan.FromSeconds(2) };
 
     public WidgetWindow()
     {
@@ -54,6 +55,16 @@ public sealed class WidgetWindow : Window
             }
         };
         SourceInitialized += (_, _) => ApplyWindowStyles();
+        // Un jeu (plein écran fenêtré) ou une autre fenêtre « au premier plan » peut passer devant :
+        // le widget se replace au-dessus toutes les 2 s (sans prendre le focus, coût négligeable).
+        _keepOnTop.Tick += (_, _) =>
+        {
+            var handle = new WindowInteropHelper(this).Handle;
+            if (handle != IntPtr.Zero)
+            {
+                SetWindowPos(handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0200);
+            }
+        };
         if (AlertService.Current is { } alerts)
         {
             alerts.Changed += () =>
@@ -69,11 +80,13 @@ public sealed class WidgetWindow : Window
         {
             if (IsVisible)
             {
+                _keepOnTop.Start();
                 SystemMonitor.Shared.IntervalMilliseconds = Math.Max(1000, App.Settings.MonitoringRefreshMilliseconds);
                 _subscription ??= SystemMonitor.Shared.Subscribe(snapshot => Dispatcher.BeginInvoke(() => Show(snapshot)));
             }
             else
             {
+                _keepOnTop.Stop();
                 _subscription?.Dispose();
                 _subscription = null;
             }
@@ -267,6 +280,9 @@ public sealed class WidgetWindow : Window
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetWindowLongPtrW(IntPtr window, int index);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
 
     [DllImport("user32.dll")]
     private static extern IntPtr SetWindowLongPtrW(IntPtr window, int index, IntPtr value);

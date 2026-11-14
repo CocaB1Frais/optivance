@@ -1,4 +1,4 @@
-//! Arguments et commandes du helper élevé.
+﻿//! Arguments et commandes du helper élevé.
 //!
 //! Lancement : `--pipe-name <nom>` et, au choix, `--volume <X>` (une analyse puis fin) ou
 //! `--session` (composant de session : reste connecté et attend des commandes ; décision du
@@ -61,6 +61,10 @@ pub enum SessionCommand {
     Clean { category: &'static str, run: bool },
     /// Réglage d'optimisation d'une liste fermée (voir `crate::tune`).
     Tune(crate::tune::TuneCommand),
+    /// Démarre la session ETW des FPS (si elle ne tourne pas déjà).
+    FpsStart,
+    /// FPS actuels d'un processus.
+    FpsQuery(u32),
     Quit,
     /// Ligne non reconnue : ignorée (aucune autre commande n'est exécutable).
     Unknown,
@@ -70,6 +74,12 @@ pub fn parse_session_command(line: &str) -> SessionCommand {
     let line = line.trim_end_matches(['\r', '\n']);
     if line == "{\"v\":3,\"type\":\"quit\"}" {
         return SessionCommand::Quit;
+    }
+    if line == "{\"v\":3,\"type\":\"fps-start\"}" {
+        return SessionCommand::FpsStart;
+    }
+    if let Some(pid) = crate::fps::parse_query(line) {
+        return SessionCommand::FpsQuery(pid);
     }
     if let Some(command) = crate::tune::parse_tune_command(line) {
         return SessionCommand::Tune(command);

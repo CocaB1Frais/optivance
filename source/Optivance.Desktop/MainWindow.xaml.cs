@@ -36,6 +36,8 @@ public partial class MainWindow : Window
 
         _tray = CreateTray();
         _alerts = new Monitoring.AlertService((title, message) => _tray.ShowBalloonTip(5000, title, message, Forms.ToolTipIcon.Warning));
+        _fps = new Monitoring.FpsProvider(() => _storagePage.Session);
+        Infrastructure.Monitoring.SystemMonitor.Shared.FpsSource = _fps.Read;
         _hotkeys = new Monitoring.GlobalHotkeys(this);
         RegisterHotkeys();
         SettingsPage.SettingsChanged += () =>
@@ -60,6 +62,10 @@ public partial class MainWindow : Window
 
     private readonly Monitoring.GlobalHotkeys _hotkeys;
     private readonly Monitoring.AlertService _alerts;
+    private readonly Monitoring.FpsProvider _fps;
+
+    /// <summary>FPS mesurables (autorisation administrateur accordée pour la session).</summary>
+    public bool FpsAvailable => _fps.Available;
 
     /// <summary>Ouvre une page (depuis le widget ou la zone de notification).</summary>
     public void OpenPage(string destination)
@@ -258,6 +264,7 @@ public partial class MainWindow : Window
         _tray.Dispose();
         _hotkeys.Dispose();
         _alerts.Dispose();
+        _fps.Dispose();
         _widget?.Close();
         Infrastructure.Monitoring.SystemMonitor.Shared.Dispose();
         // Fermeture du composant élevé hors du fil d'interface (pas d'interblocage), 3 s au plus.

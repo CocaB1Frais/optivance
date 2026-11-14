@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -148,7 +148,8 @@ public sealed class MonitoringPage : UserControl
         Set("netUp", MonitorFormat.Rate(s.NetworkUpBytesPerSecond));
         Set("uptime", MonitorFormat.Uptime(s.Uptime));
         Set("processes", s.Processes?.ToString() ?? MonitorFormat.Unavailable);
-        Set("fps", s.Fps is { } fps ? $"{MonitorFormat.Fps(fps)} ({s.FpsProcess})" : "aucun jeu détecté");
+        Set("fps", s.Fps is { } fps ? $"{MonitorFormat.Fps(fps)} ({s.FpsProcess})"
+            : (System.Windows.Application.Current.MainWindow as MainWindow)?.FpsAvailable == true ? "aucun jeu DirectX au premier plan" : "autorisation administrateur requise");
         _cpuLine.Push(s.CpuPercent);
         _gpuLine.Push(s.GpuPercent);
         _memoryLine.Push(s.MemoryPercent);

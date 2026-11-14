@@ -25,6 +25,35 @@ if (args.Length == 1 && args[0] == "--monitor")
     return 0;
 }
 
+// Mode FPS : composant administrateur (UAC), FPS de la fenêtre au premier plan chaque seconde pendant N s,
+// et coût processeur du composant pendant la mesure.
+if (args.Length is 1 or 2 && args[0] == "--fps")
+{
+    var seconds = args.Length == 2 && int.TryParse(args[1], out var s) ? s : 45;
+    await using var session = await MftSession.StartAsync(CancellationToken.None);
+    Console.WriteLine($"session ETW démarrée : {await session.StartFpsAsync()}");
+    var helper = System.Diagnostics.Process.GetProcessesByName("optivance-mft-helper").FirstOrDefault();
+    var cpuStart = helper?.TotalProcessorTime;
+    var clock = System.Diagnostics.Stopwatch.StartNew();
+    for (var i = 0; i < seconds; i++)
+    {
+        await Task.Delay(1000);
+        var window = NativeForeground.Window();
+        NativeForeground.GetWindowThreadProcessId(window, out var pid);
+        string name;
+        try { using var process = System.Diagnostics.Process.GetProcessById((int)pid); name = process.ProcessName; } catch (ArgumentException) { name = "?"; }
+        var fps = await session.QueryFpsAsync((int)pid);
+        Console.WriteLine($"{i + 1,3} s  {name,-28} {(fps is { } f ? $"{f:0.0} FPS" : "—")}");
+    }
+    if (helper is not null && cpuStart is { } start)
+    {
+        helper.Refresh();
+        var used = (helper.TotalProcessorTime - start).TotalSeconds / clock.Elapsed.TotalSeconds / Environment.ProcessorCount * 100;
+        Console.WriteLine($"coût du composant pendant la mesure : {used:0.00} % du processeur, mémoire {helper.PrivateMemorySize64 / 1048576.0:0.0} Mo");
+    }
+    return 0;
+}
+
 // Mode AMD : lecture des capteurs via ADL (atiadlxx.dll du pilote AMD).
 if (args.Length == 1 && args[0] == "--amd")
 {
@@ -145,3 +174,10 @@ catch (Exception exception)
 }
 
 internal sealed record ProgressSnapshot(long Files = 0, long Directories = 0);
+
+static class NativeForeground
+{
+    [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+    public static IntPtr Window() => GetForegroundWindow();
+}
