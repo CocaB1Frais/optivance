@@ -24,6 +24,21 @@ public partial class App : Application
 
         // Une seule instance : relancer OPTIVANCE réaffiche la fenêtre existante.
         _instance = new Mutex(initiallyOwned: true, InstanceName, out var first);
+        if (e.Args.Contains("--uninstall"))
+        {
+            // « Desinstaller OPTIVANCE.cmd » : aucune fenêtre principale, aucune demande d'élévation au démarrage.
+            Settings = AppSettings.Load();
+            if (!first)
+            {
+                ConfirmDialog.Inform(null, "OPTIVANCE est ouvert", "Quittez d’abord OPTIVANCE (clic droit sur son icône près de l’horloge › Quitter), puis relancez la désinstallation.");
+            }
+            else
+            {
+                await Uninstaller.RunAsync(null, null);
+            }
+            Shutdown();
+            return;
+        }
         if (!first)
         {
             try

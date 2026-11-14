@@ -18,3 +18,4 @@ dist/
 # Application construite, copiée à la racine par build.ps1
 /OPTIVANCE.exe
 /moteur/
+/Desinstaller OPTIVANCE.cmd

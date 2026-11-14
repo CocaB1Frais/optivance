@@ -176,7 +176,7 @@ public partial class MainWindow : Window
             : new Thickness(0);
         WindowFrame.BorderThickness = maximized ? new Thickness(0) : new Thickness(1);
         WindowFrame.BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x30, 0x3B, 0x4B));
-        MaximizeButton.Content = maximized ? "" : "";
+        MaximizeGlyph.Data = System.Windows.Media.Geometry.Parse(maximized ? "M2.5,0.5 H9.5 V7.5 M0.5,2.5 H7.5 V9.5 H0.5 Z" : "M0.5,0.5 H9.5 V9.5 H0.5 Z");
         MaximizeButton.ToolTip = maximized ? "Niveau inférieur" : "Agrandir";
     }
 
@@ -212,6 +212,15 @@ public partial class MainWindow : Window
         Topmost = true;
         Topmost = false;
         Focus();
+    }
+
+    /// <summary>Paramètres › Désinstaller : restaure, nettoie puis ferme OPTIVANCE.</summary>
+    public async Task UninstallAsync()
+    {
+        if (await Uninstaller.RunAsync(this, _storagePage.Session))
+        {
+            ExitApplication();
+        }
     }
 
     public void ExitApplication()

@@ -39,7 +39,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Échec de la publication.' }
 
 # Contenu attendu : OPTIVANCE.exe seul + dossier moteur.
 Get-ChildItem $app -File -Filter *.pdb | Remove-Item -Force
-$unexpected = Get-ChildItem $app -File | Where-Object Name -ne 'OPTIVANCE.exe'
+# Raccourci de désinstallation, à côté de l'application.
+"@echo off`r`nstart """" ""%~dp0OPTIVANCE.exe"" --uninstall`r`n" | Set-Content (Join-Path $app 'Desinstaller OPTIVANCE.cmd') -Encoding ascii -NoNewline
+$unexpected = Get-ChildItem $app -File | Where-Object Name -notin 'OPTIVANCE.exe', 'Desinstaller OPTIVANCE.cmd'
 if ($unexpected) { throw "Fichiers inattendus : $($unexpected.Name -join ', ')" }
 foreach ($engine in 'optivance-engine.exe', 'optivance-mft-helper.exe') {
     if (-not (Test-Path (Join-Path $app "moteur\$engine"))) { throw "Moteur manquant : moteur\$engine" }
@@ -60,6 +62,7 @@ if (-not $env:CI) {
     try {
         Copy-Item (Join-Path $app 'OPTIVANCE.exe') $root -Force
         Copy-Item (Join-Path $app 'moteur') $root -Recurse -Force
+        Copy-Item (Join-Path $app 'Desinstaller OPTIVANCE.cmd') $root -Force
         Write-Host "Prêt : $(Join-Path $root 'OPTIVANCE.exe')" -ForegroundColor Green
     }
     catch {

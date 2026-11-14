@@ -1,7 +1,7 @@
 ﻿<Project>
   <!-- Numéro de version unique d'OPTIVANCE : à modifier ici (et dans CHANGELOG.md) avant chaque publication. -->
   <PropertyGroup>
-    <Version>1.0.2</Version>
+    <Version>1.0.3</Version>
     <Product>OPTIVANCE</Product>
     <Company>OPTIVANCE</Company>
     <Copyright>© 2026 OPTIVANCE. Tous droits réservés.</Copyright>

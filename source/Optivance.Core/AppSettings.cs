@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Optivance.Core;
@@ -55,7 +55,10 @@ public sealed class AppSettings
     public int HistoryRetentionDays { get; set; } = 180;
 
     [JsonIgnore]
-    public static string Folder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OPTIVANCE");
+    public static string Folder =>
+        // OPTIVANCE_DATA_DIR : dossier de données de test (essais isolés, sans toucher aux vraies données).
+        Environment.GetEnvironmentVariable("OPTIVANCE_DATA_DIR") is { Length: > 0 } test ? test
+        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OPTIVANCE");
 
     private static string FilePath => Path.Combine(Folder, "settings.json");
 
