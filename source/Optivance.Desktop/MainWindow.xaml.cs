@@ -38,6 +38,7 @@ public partial class MainWindow : Window
         _alerts = new Monitoring.AlertService((title, message) => _tray.ShowBalloonTip(5000, title, message, Forms.ToolTipIcon.Warning));
         _fps = new Monitoring.FpsProvider(() => _storagePage.Session);
         Infrastructure.Monitoring.SystemMonitor.Shared.FpsSource = _fps.Read;
+        _fps.GameChanged += game => Dispatcher.BeginInvoke(() => OnGameChanged(game));
         _hotkeys = new Monitoring.GlobalHotkeys(this);
         RegisterHotkeys();
         SettingsPage.SettingsChanged += () =>
@@ -91,6 +92,33 @@ public partial class MainWindow : Window
         if (refused.Count > 0)
         {
             SetStatus($"Raccourci indisponible (déjà utilisé par une autre application ?) : {string.Join(", ", refused)}");
+        }
+    }
+
+    /// <summary>Widget affiché automatiquement pour le jeu en cours (masqué en sortant du jeu).</summary>
+    private bool _autoShown;
+
+    private void OnGameChanged(string? game)
+    {
+        if (game is not null)
+        {
+            if (!App.Settings.WidgetAutoShowInGames || _widget is { IsVisible: true })
+            {
+                return;
+            }
+            _widget ??= new Monitoring.WidgetWindow();
+            _widget.ApplySettings();
+            _widget.Show();
+            _autoShown = true;
+            App.History.Add(HistoryCategory.Monitoring, "Jeu détecté", game, "widget affiché automatiquement");
+        }
+        else if (_autoShown)
+        {
+            _autoShown = false;
+            if (!App.Settings.WidgetVisible)
+            {
+                _widget?.Hide();
+            }
         }
     }
 

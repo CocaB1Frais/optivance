@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -72,6 +72,7 @@ public sealed class SettingsPage : UserControl
         Toggle(widget, "Afficher le réseau", null, S.WidgetShowNetwork, value => S.WidgetShowNetwork = value);
         Toggle(widget, "Afficher la consommation de la carte graphique", null, S.WidgetShowGpuPower, value => S.WidgetShowGpuPower = value);
         Toggle(widget, "Afficher l’espace disque", "Espace libre du disque système.", S.WidgetShowDisk, value => S.WidgetShowDisk = value);
+        Toggle(widget, "Afficher automatiquement en jeu", "Le widget apparaît quand un jeu plein écran (ou sans bordure) est au premier plan, puis disparaît quand vous le quittez. Autorisation administrateur requise.", S.WidgetAutoShowInGames, value => S.WidgetAutoShowInGames = value);
         Toggle(widget, "Widget réduit", "Une seule ligne, sans titre (aussi accessible par clic droit sur le widget).", S.WidgetCompact, value => S.WidgetCompact = value);
 
         var alerts = Section("Alertes");

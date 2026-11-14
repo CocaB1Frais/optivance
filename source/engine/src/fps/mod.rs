@@ -1,10 +1,11 @@
-//! FPS des jeux par ETW (sans injection), dans le composant de session élevé.
+﻿//! FPS des jeux par ETW (sans injection), dans le composant de session élevé.
 //!
-//! Une session ETW temps réel « OPTIVANCE-FPS » écoute les événements « Present » des
-//! fournisseurs DXGI (Direct3D 10/11/12) et D3D9 publiés par Windows. Chaque événement
-//! est compté par processus ; l'interface demande les FPS du processus au premier plan.
-//! La session est arrêtée à la fin du composant (et une session orpheline est arrêtée au démarrage).
-//! Vulkan et OpenGL ne publient pas ces événements : leurs FPS restent « indisponibles ».
+//! Une session ETW temps réel « OPTIVANCE-FPS » écoute les événements « Present » publiés par
+//! Windows : runtimes DXGI (Direct3D 10/11/12) et D3D9, et noyau graphique DxgKrnl (tous les
+//! jeux, y compris OpenGL et Vulkan ; même source que PresentMon). Chaque source est comptée
+//! séparément par processus pour ne pas compter deux fois une même image : le runtime est
+//! prioritaire, sinon la plus active des sources du noyau. La session est arrêtée à la fin du
+//! composant (et une session orpheline est arrêtée au démarrage).
 
 pub mod sys;
 
@@ -15,15 +16,30 @@ use crate::fasthash::FastMap;
 /// Événements conservés par processus (≈ 3 s à 500 images/s).
 const MAX_EVENTS: usize = 1500;
 
-/// Horodatages d'images par processus (unités QPC).
+/// Source d'un événement « image affichée ».
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Source {
+    /// DXGI ou D3D9 (une image = un événement).
+    Runtime,
+    /// DxgKrnl Present_Info (appel D3DKMTPresent).
+    KernelPresent,
+    /// DxgKrnl PresentHistory(Detailed)_Start (image composée par le bureau).
+    KernelHistory,
+}
+
+/// Horodatages d'images par processus et par source (unités QPC).
 #[derive(Default)]
 pub struct FpsCounter {
-    events: FastMap<u32, VecDeque<i64>>,
+    events: FastMap<(u32, Source), VecDeque<i64>>,
 }
 
 impl FpsCounter {
     pub fn record(&mut self, pid: u32, timestamp: i64) {
-        let queue = self.events.entry(pid).or_default();
+        self.record_from(pid, Source::Runtime, timestamp);
+    }
+
+    pub fn record_from(&mut self, pid: u32, source: Source, timestamp: i64) {
+        let queue = self.events.entry((pid, source)).or_default();
         queue.push_back(timestamp);
         while queue.len() > MAX_EVENTS {
             queue.pop_front();
@@ -33,7 +49,17 @@ impl FpsCounter {
     /// FPS de `pid` sur la dernière seconde d'événements reçus. `None` si le processus n'a rien
     /// affiché depuis plus de 2 s (`now`, horloge QPC) ou s'il n'y a pas assez d'images.
     pub fn fps(&self, pid: u32, now: i64, frequency: i64) -> Option<f64> {
-        let queue = self.events.get(&pid)?;
+        if let Some(runtime) = self.source_fps(pid, Source::Runtime, now, frequency) {
+            return Some(runtime);
+        }
+        match (self.source_fps(pid, Source::KernelPresent, now, frequency), self.source_fps(pid, Source::KernelHistory, now, frequency)) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    fn source_fps(&self, pid: u32, source: Source, now: i64, frequency: i64) -> Option<f64> {
+        let queue = self.events.get(&(pid, source))?;
         let last = *queue.back()?;
         if frequency <= 0 || now - last > 2 * frequency {
             return None;
@@ -102,7 +128,25 @@ mod tests {
         for i in 0..10_000 {
             counter.record(3, i);
         }
-        assert_eq!(counter.events[&3].len(), MAX_EVENTS);
+        assert_eq!(counter.events[&(3, Source::Runtime)].len(), MAX_EVENTS);
+    }
+
+    #[test]
+    fn runtime_wins_and_kernel_sources_are_not_added() {
+        let mut counter = FpsCounter::default();
+        // OpenGL : seulement le noyau, 60 images/s par Present_Info et autant par PresentHistory.
+        for i in 0..=120 {
+            counter.record_from(9, Source::KernelPresent, i * FREQ / 60);
+            counter.record_from(9, Source::KernelHistory, i * FREQ / 60);
+        }
+        let fps = counter.fps(9, 2 * FREQ, FREQ).unwrap();
+        assert!((fps - 60.0).abs() < 1.0, "pas de double comptage : {fps}");
+        // DirectX : le runtime (144) est prioritaire sur le noyau.
+        for i in 0..=288 {
+            counter.record_from(9, Source::Runtime, i * FREQ / 144);
+        }
+        let fps = counter.fps(9, 2 * FREQ, FREQ).unwrap();
+        assert!((fps - 144.0).abs() < 1.0, "{fps}");
     }
 
     #[test]

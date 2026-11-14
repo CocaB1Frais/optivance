@@ -5,7 +5,7 @@ use std::ffi::c_void;
 use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 
-use super::FpsCounter;
+use super::{FpsCounter, Source};
 
 type TraceHandle = u64;
 const INVALID_PROCESSTRACE_HANDLE: TraceHandle = u64::MAX;
@@ -17,6 +17,13 @@ const DXGI_PRESENT_START: u16 = 42;
 /// Microsoft-Windows-D3D9 : Present_Start = 1.
 const D3D9: [u8; 16] = guid(0x783ACA0A, 0x790E, 0x4D7F, [0x84, 0x51, 0xAA, 0x85, 0x05, 0x11, 0xC6, 0xB9]);
 const D3D9_PRESENT_START: u16 = 1;
+/// Microsoft-Windows-DxgKrnl (identifiants de PresentMon, licence MIT) : Present_Info = 184,
+/// PresentHistory_Start = 171, PresentHistoryDetailed_Start = 215 ; mot-clé « Present ».
+const DXGKRNL: [u8; 16] = guid(0x802EC45A, 0x1E99, 0x4B83, [0x99, 0x20, 0x87, 0xC9, 0x82, 0x77, 0xBA, 0x9D]);
+const DXGKRNL_PRESENT_INFO: u16 = 184;
+const DXGKRNL_PRESENT_HISTORY_START: u16 = 171;
+const DXGKRNL_PRESENT_HISTORY_DETAILED_START: u16 = 215;
+const DXGKRNL_KEYWORD_PRESENT: u64 = 0x0800_0000;
 
 const PROPERTIES_SIZE: usize = 120;
 const LOGFILE_SIZE: usize = 448;
@@ -98,11 +105,17 @@ unsafe extern "system" fn on_event(record: *mut c_void) {
             std::ptr::read_unaligned(base.add(40).cast::<u16>()),
         )
     };
-    let present = (provider == DXGI && id == DXGI_PRESENT_START) || (provider == D3D9 && id == D3D9_PRESENT_START);
-    if present {
-        if let Ok(mut counter) = counter().lock() {
-            counter.record(pid, timestamp);
-        }
+    let source = if (provider == DXGI && id == DXGI_PRESENT_START) || (provider == D3D9 && id == D3D9_PRESENT_START) {
+        Source::Runtime
+    } else if provider == DXGKRNL && id == DXGKRNL_PRESENT_INFO {
+        Source::KernelPresent
+    } else if provider == DXGKRNL && (id == DXGKRNL_PRESENT_HISTORY_START || id == DXGKRNL_PRESENT_HISTORY_DETAILED_START) {
+        Source::KernelHistory
+    } else {
+        return;
+    };
+    if let Ok(mut counter) = counter().lock() {
+        counter.record_from(pid, source, timestamp);
     }
 }
 
@@ -136,9 +149,9 @@ impl FpsSession {
         if status != 0 {
             return Err(status);
         }
-        for provider in [DXGI, D3D9] {
+        for (provider, keyword) in [(DXGI, 0), (D3D9, 0), (DXGKRNL, DXGKRNL_KEYWORD_PRESENT)] {
             // SAFETY: session ouverte, GUID valide.
-            unsafe { EnableTraceEx2(session, provider.as_ptr().cast(), EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, 0, 0, 0, std::ptr::null_mut()) };
+            unsafe { EnableTraceEx2(session, provider.as_ptr().cast(), EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, keyword, 0, 0, std::ptr::null_mut()) };
         }
 
         let mut logfile = vec![0u64; LOGFILE_SIZE / 8];
