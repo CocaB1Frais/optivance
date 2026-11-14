@@ -99,6 +99,21 @@ public sealed class SettingsPage : UserControl
             Directory.CreateDirectory(AppSettings.Folder);
             Process.Start(new ProcessStartInfo("explorer.exe", $"\"{AppSettings.Folder}\"") { UseShellExecute = true })?.Dispose();
         });
+
+        var about = Section("À propos");
+        var version = typeof(App).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion.Split('+')[0] ?? "?";
+        var releases = typeof(App).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyMetadataAttribute), false)
+            .OfType<System.Reflection.AssemblyMetadataAttribute>().FirstOrDefault(a => a.Key == "ReleasesUrl")?.Value;
+        if (string.IsNullOrWhiteSpace(releases))
+        {
+            Row(about, $"OPTIVANCE {version}", "Version de développement : page des mises à jour non configurée.", new Border());
+        }
+        else
+        {
+            Action(about, $"OPTIVANCE {version} — rechercher une mise à jour", "Ouvrir la page des versions", () =>
+                Process.Start(new ProcessStartInfo(releases) { UseShellExecute = true })?.Dispose());
+        }
     }
 
     private static Brush Muted => (Brush)Application.Current.FindResource("MutedTextBrush");

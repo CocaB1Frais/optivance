@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
@@ -17,7 +17,10 @@ public sealed class MftScanClient
     public const string HelperFileName = "optivance-mft-helper.exe";
     private const int ErrorCancelled = 1223;
 
-    public static string HelperPath => Path.Combine(AppContext.BaseDirectory, HelperFileName);
+    public static string HelperPath => Path.Combine(EngineFolder, HelperFileName);
+
+    /// <summary>Sous-dossier des exécutables du moteur, à côté d'OPTIVANCE.exe (seul fichier visible à la racine).</summary>
+    public static string EngineFolder => Path.Combine(AppContext.BaseDirectory, "moteur");
 
     public static bool IsHelperPresent => File.Exists(HelperPath);
 
@@ -73,7 +76,7 @@ public sealed class MftScanClient
                 UseShellExecute = true,
                 Verb = "runas",
                 WindowStyle = ProcessWindowStyle.Hidden,
-                WorkingDirectory = AppContext.BaseDirectory
+                WorkingDirectory = MftScanClient.EngineFolder
             });
         }
         catch (Win32Exception exception) when (exception.NativeErrorCode == ErrorCancelled)
@@ -218,7 +221,7 @@ public sealed class MftSession : IAsyncDisposable
                 UseShellExecute = true,
                 Verb = "runas",
                 WindowStyle = ProcessWindowStyle.Hidden,
-                WorkingDirectory = AppContext.BaseDirectory
+                WorkingDirectory = MftScanClient.EngineFolder
             });
         }
         catch (System.ComponentModel.Win32Exception exception) when (exception.NativeErrorCode == ErrorCancelled)

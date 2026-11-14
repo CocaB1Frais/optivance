@@ -12,3 +12,6 @@ graphify-out/
 .vs/
 *.user
 *.suo
+
+# Version portable construite par build.ps1
+dist/

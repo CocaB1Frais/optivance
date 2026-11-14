@@ -1,4 +1,4 @@
-# OPTIVANCE — Instructions projet pour Claude Code
+﻿# OPTIVANCE — Instructions projet pour Claude Code
 
 ## Rôle
 
@@ -13,7 +13,10 @@ Codex est l'implémenteur principal. Claude Code est l'assistant technique compl
 
 ## Documents de référence (à lire avant toute intervention)
 
-`ARCHITECTURE_DECISIONS.md` (D-01 à D-18, source prioritaire), `ARCHITECTURE_VALIDATION_PLAN.md`, `IMPLEMENTATION_ROADMAP.md`, `UPDATED_PRODUCT_SPECIFICATION.md`, `PROPOSED_ARCHITECTURE.md`, `TECHNOLOGY_DECISION.md`, `LICENSE_REVIEW.md`, `THIRD_PARTY_LICENSES.md`. Le changelog est une trace historique (la section la plus récente prévaut). `governance/` contient errata, analyse d'écarts et prérequis V-01/V-02.
+Emplacement depuis le 14/11/2026 : `docs/architecture/` (documents de la Phase 0, contenu inchangé), `docs/governance/`, `docs/validation/`. Outil de diagnostic : `tools/ScanProbe/`. Version portable : `build.ps1` → `dist/OPTIVANCE/`.
+
+
+`ARCHITECTURE_DECISIONS.md` (D-01 à D-18, source prioritaire), `ARCHITECTURE_VALIDATION_PLAN.md`, `IMPLEMENTATION_ROADMAP.md`, `UPDATED_PRODUCT_SPECIFICATION.md`, `PROPOSED_ARCHITECTURE.md`, `TECHNOLOGY_DECISION.md`, `LICENSE_REVIEW.md`, `THIRD_PARTY_LICENSES.md`. Le changelog est une trace historique (la section la plus récente prévaut). `docs/governance/` contient errata, analyse d'écarts et prérequis V-01/V-02.
 
 ## Repères produit à ne jamais contredire
 
@@ -37,7 +40,7 @@ Codex est l'implémenteur principal. Claude Code est l'assistant technique compl
 3. Ne jamais présenter une recommandation comme une décision.
 4. Ne jamais présenter un test proposé comme exécuté, ni réussi sans preuve.
 5. Ne commencer aucune phase ou étape non autorisée explicitement; l'autonomie de travail ne vaut pas autorisation de phase, d'installation, de commit, de modification système ni de décision produit structurante.
-6. Ne pas modifier les documents de référence sans autorisation; proposer des errata dans `governance/`.
+6. Ne pas modifier les documents de référence sans autorisation; proposer des errata dans `docs/governance/`.
 7. Aucune dépendance tierce sans vérification de licence et compatibilité avec D-16.
 8. Aucun service Windows permanent, aucune télémétrie, aucun réseau applicatif en V1.
 9. Aucune modification silencieuse du système (registre, packages, Startup, ACL, Explorer).

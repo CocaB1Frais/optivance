@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using Optivance.Core;
 
 namespace Optivance.Infrastructure;
@@ -11,7 +11,7 @@ public sealed class ScanEngineClient
         IProgress<ScanUpdate>? progress,
         CancellationToken cancellationToken)
     {
-        var workerPath = Path.Combine(AppContext.BaseDirectory, "optivance-engine.exe");
+        var workerPath = Path.Combine(MftScanClient.EngineFolder, "optivance-engine.exe");
         if (!File.Exists(workerPath))
         {
             throw new FileNotFoundException("Le moteur Rust est absent du dossier de l’application.", workerPath);
@@ -29,7 +29,7 @@ public sealed class ScanEngineClient
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardError = true,
-                WorkingDirectory = AppContext.BaseDirectory
+                WorkingDirectory = MftScanClient.EngineFolder
             },
             EnableRaisingEvents = true
         };

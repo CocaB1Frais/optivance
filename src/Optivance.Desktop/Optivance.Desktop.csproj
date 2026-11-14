@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
@@ -40,13 +40,15 @@
     <ProjectReference Include="..\Optivance.Core\Optivance.Core.csproj" />
     <ProjectReference Include="..\Optivance.Infrastructure\Optivance.Infrastructure.csproj" />
     <None Include="$(OptivanceEngineExe)"
-          Link="optivance-engine.exe"
+          Link="moteur\optivance-engine.exe"
           CopyToOutputDirectory="PreserveNewest"
-          CopyToPublishDirectory="PreserveNewest" />
+          CopyToPublishDirectory="PreserveNewest"
+          ExcludeFromSingleFile="true" />
     <None Include="$(OptivanceMftHelperExe)"
-          Link="optivance-mft-helper.exe"
+          Link="moteur\optivance-mft-helper.exe"
           CopyToOutputDirectory="PreserveNewest"
-          CopyToPublishDirectory="PreserveNewest" />
+          CopyToPublishDirectory="PreserveNewest"
+          ExcludeFromSingleFile="true" />
   </ItemGroup>
   <Target Name="BuildOptivanceRustEngine" BeforeTargets="PrepareForBuild">
     <Exec Command="&quot;$(CargoExe)&quot; build --release --locked --manifest-path &quot;$(OptivanceEngineDir)\Cargo.toml&quot; --target-dir &quot;$(OptivanceCargoTargetDir)&quot;"
