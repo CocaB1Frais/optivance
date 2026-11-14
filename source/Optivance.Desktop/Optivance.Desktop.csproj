@@ -16,7 +16,7 @@
        (pas depuis manifest-path) : il doit donc être lancé depuis engine/ pour appliquer
        la cible x86_64-pc-windows-msvc et le CRT statique (aucune dépendance VCRUNTIME140). -->
   <PropertyGroup>
-    <OptivanceEngineDir>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\..\engine'))</OptivanceEngineDir>
+    <OptivanceEngineDir>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\engine'))</OptivanceEngineDir>
     <OptivanceCargoTargetDir>$(OptivanceEngineDir)\target\engine-v0-2</OptivanceCargoTargetDir>
     <!-- Le triplet doit rester identique à build.target dans engine/.cargo/config.toml. -->
     <OptivanceEngineExe>$(OptivanceCargoTargetDir)\x86_64-pc-windows-msvc\release\optivance-engine.exe</OptivanceEngineExe>

@@ -7,8 +7,8 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Optivance.Core\Optivance.Core.csproj" />
-    <ProjectReference Include="..\..\src\Optivance.Infrastructure\Optivance.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\Optivance.Core\Optivance.Core.csproj" />
+    <ProjectReference Include="..\..\Optivance.Infrastructure\Optivance.Infrastructure.csproj" />
     <!-- Même binaire que l'application (cible explicite + CRT statique, voir Optivance.Desktop.csproj). -->
     <None Include="..\..\engine\target\engine-v0-2\x86_64-pc-windows-msvc\release\optivance-engine.exe"
           Link="moteur\optivance-engine.exe"

@@ -13,7 +13,7 @@ Codex est l'implémenteur principal. Claude Code est l'assistant technique compl
 
 ## Documents de référence (à lire avant toute intervention)
 
-Emplacement depuis le 14/11/2026 : `docs/architecture/` (documents de la Phase 0, contenu inchangé), `docs/governance/`, `docs/validation/`. Outil de diagnostic : `tools/ScanProbe/`. Version portable : `build.ps1` → `dist/OPTIVANCE/`.
+Emplacement depuis le 14/11/2026 : `docs/architecture/` (documents de la Phase 0, contenu inchangé), `docs/governance/`, `docs/validation/`. Code : `source/` (Optivance.Core, Optivance.Infrastructure, Optivance.Desktop, engine, tests, tools/ScanProbe). Construction : `build.ps1` → `OPTIVANCE.exe` + `moteur/` à la racine (non versionnés) et `dist/OPTIVANCE-win-x64.zip`.
 
 
 `ARCHITECTURE_DECISIONS.md` (D-01 à D-18, source prioritaire), `ARCHITECTURE_VALIDATION_PLAN.md`, `IMPLEMENTATION_ROADMAP.md`, `UPDATED_PRODUCT_SPECIFICATION.md`, `PROPOSED_ARCHITECTURE.md`, `TECHNOLOGY_DECISION.md`, `LICENSE_REVIEW.md`, `THIRD_PARTY_LICENSES.md`. Le changelog est une trace historique (la section la plus récente prévaut). `docs/governance/` contient errata, analyse d'écarts et prérequis V-01/V-02.

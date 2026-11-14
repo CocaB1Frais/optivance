@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <!-- Tests du modèle Storage, sans dépendance tierce (aucun paquet NuGet). Lancement : dotnet run -c Release -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Optivance.Core\Optivance.Core.csproj" />
-    <ProjectReference Include="..\..\src\Optivance.Infrastructure\Optivance.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\Optivance.Core\Optivance.Core.csproj" />
+    <ProjectReference Include="..\..\Optivance.Infrastructure\Optivance.Infrastructure.csproj" />
   </ItemGroup>
 </Project>
