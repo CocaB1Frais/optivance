@@ -25,6 +25,28 @@ if (args.Length == 1 && args[0] == "--monitor")
     return 0;
 }
 
+// Mode doublons : analyse standard d'un dossier puis recherche (diagnostic de FileFinder).
+if (args.Length == 2 && args[0] == "--duplicates")
+{
+    var folder = Path.GetFullPath(args[1]);
+    var scan = await new ScanEngineClient().ScanAsync(folder, null, CancellationToken.None);
+    var tree = new Optivance.Core.Storage.StorageTree(folder, scan.Entries);
+    var filter = new Optivance.Core.Storage.FileFilter(MinimumBytes: 1UL << 20);
+    var sameSize = Optivance.Core.Storage.FileFinder.SameSizeGroups(tree, filter);
+    Console.WriteLine($"fichiers={tree.Files(0)} candidats(même taille)={sameSize.Count}");
+    foreach (var group in sameSize.Take(5))
+    {
+        foreach (var id in group)
+        {
+            var path = tree.GetPath(id);
+            Console.WriteLine($"  {tree.Size(id)} dup={tree.IsDuplicate(id)} existe={File.Exists(path)} partiel={Optivance.Core.Storage.FileFinder.PartialHash(path, tree.Size(id))?[..20]} {path}");
+        }
+    }
+    var groups = await Optivance.Core.Storage.FileFinder.DuplicatesAsync(tree, filter, null, CancellationToken.None);
+    Console.WriteLine($"groupes de doublons={groups.Count}");
+    return 0;
+}
+
 // Mode MFT : lance le helper avec demande UAC (lecture seule), mÃ©triques uniquement.
 char? mftLetter = args.Length == 2 && args[0] == "--mft" && args[1].Length >= 1 && char.IsAsciiLetter(args[1][0]) ? args[1][0] : null;
 var target = mftLetter is { } volumeLetter ? $"{volumeLetter}:\\" : Path.GetFullPath(args[0]);

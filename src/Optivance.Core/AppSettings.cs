@@ -34,6 +34,20 @@ public sealed class AppSettings
     public bool WidgetShowTemperatures { get; set; } = true;
     public bool WidgetShowFps { get; set; } = true;
     public bool WidgetShowNetwork { get; set; }
+    public bool WidgetShowGpuPower { get; set; } = true;
+    public bool WidgetShowDisk { get; set; }
+    /// <summary>Widget réduit : une seule ligne, sans titre.</summary>
+    public bool WidgetCompact { get; set; }
+
+    // Alertes (notification Windows, couleur dans le widget, son)
+    public bool AlertCpuTemperature { get; set; } = true;
+    public int AlertCpuCelsius { get; set; } = 90;
+    public bool AlertGpuTemperature { get; set; } = true;
+    public int AlertGpuCelsius { get; set; } = 85;
+    public bool AlertDiskSpace { get; set; } = true;
+    public int AlertDiskFreePercent { get; set; } = 10;
+    public bool AlertNotification { get; set; } = true;
+    public bool AlertSound { get; set; } = true;
     public string WidgetToggleHotkey { get; set; } = "Ctrl+Alt+W";
     public string WidgetClickThroughHotkey { get; set; } = "Ctrl+Alt+X";
 
@@ -81,6 +95,9 @@ public sealed class AppSettings
         MonitoringRefreshMilliseconds = Math.Clamp(MonitoringRefreshMilliseconds, 250, 10_000);
         WidgetOpacity = Math.Clamp(double.IsFinite(WidgetOpacity) ? WidgetOpacity : 0.82, 0.25, 1.0);
         HistoryRetentionDays = Math.Clamp(HistoryRetentionDays, 1, 3650);
+        AlertCpuCelsius = Math.Clamp(AlertCpuCelsius, 50, 110);
+        AlertGpuCelsius = Math.Clamp(AlertGpuCelsius, 50, 110);
+        AlertDiskFreePercent = Math.Clamp(AlertDiskFreePercent, 1, 50);
         WidgetToggleHotkey = string.IsNullOrWhiteSpace(WidgetToggleHotkey) ? "Ctrl+Alt+W" : WidgetToggleHotkey.Trim();
         WidgetClickThroughHotkey = string.IsNullOrWhiteSpace(WidgetClickThroughHotkey) ? "Ctrl+Alt+X" : WidgetClickThroughHotkey.Trim();
     }

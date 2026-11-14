@@ -301,6 +301,8 @@ public partial class StoragePage : UserControl
         RefreshExtensions();
         _ = ApplyFileFilterAsync();
         UpdateSummary();
+        Finder.DeleteRequested ??= DeleteManyAsync;
+        Finder.SetTree(tree);
         ZoomTreemap(0);
         ShowNotice();
         Status($"{tree.RootPath} · {StorageFormat.Bytes(tree.TotalBytes)} · {StorageFormat.Count(tree.Files(0))} fichiers · {StorageFormat.Duration(summary.Elapsed)} ({MethodLabel(summary.Method)})");
@@ -945,6 +947,7 @@ public partial class StoragePage : UserControl
         var parent = tree.Parent(id);
         var freed = tree.Remove(id);
         _allFiles = await Task.Run(tree.FilesBySize);
+        Finder.RemoveDeleted();
         RebuildRows(select: parent);
         RefreshExtensions();
         _ = ApplyFileFilterAsync();
@@ -953,6 +956,52 @@ public partial class StoragePage : UserControl
         Status(permanent
             ? $"Supprimé définitivement : {path} ({StorageFormat.Bytes(freed)} libérés)"
             : $"Mis à la Corbeille : {path} ({StorageFormat.Bytes(freed)} ; l’espace sera libéré en vidant la Corbeille)");
+    }
+
+    /// <summary>
+    /// Suppression d'une sélection (onglet Gros fichiers et doublons) ; la confirmation est
+    /// faite par l'onglet. Index, historique et treemap mis à jour une seule fois.
+    /// </summary>
+    private async Task DeleteManyAsync(IReadOnlyList<int> ids, bool permanent)
+    {
+        if (_tree is null || IsScanning)
+        {
+            return;
+        }
+        var tree = _tree;
+        var targets = ids.Where(id => id > 0 && !tree.IsDeleted(id)).Select(id => (Id: id, Path: tree.GetPath(id), Size: tree.Size(id))).ToList();
+        var action = permanent ? "Suppression définitive" : "Mise à la Corbeille";
+        ulong freed = 0;
+        var failed = 0;
+        Mouse.OverrideCursor = Cursors.Wait;
+        try
+        {
+            foreach (var target in targets)
+            {
+                Status($"Suppression de {target.Path}…");
+                var error = await Task.Run(() => ShellOperations.Delete(target.Path, toRecycleBin: !permanent));
+                App.History.Add(HistoryCategory.Storage, action, target.Path, error ?? StorageFormat.Bytes(target.Size), error is null);
+                if (error is null)
+                {
+                    freed += tree.Remove(target.Id);
+                }
+                else
+                {
+                    failed++;
+                }
+            }
+        }
+        finally
+        {
+            Mouse.OverrideCursor = null;
+        }
+        _allFiles = await Task.Run(tree.FilesBySize);
+        RebuildRows(select: 0);
+        RefreshExtensions();
+        _ = ApplyFileFilterAsync();
+        UpdateSummary();
+        Treemap.Refresh(ColorOf);
+        Status($"{targets.Count - failed:N0} fichier(s) {(permanent ? "supprimés" : "mis à la Corbeille")} ({StorageFormat.Bytes(freed)})" + (failed > 0 ? $", {failed} impossible(s) (fichier ouvert ou protégé)." : "."));
     }
 
     // ───────────────────────────── Divers ─────────────────────────────

@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using Optivance.Core;
@@ -18,6 +18,7 @@ public partial class MainWindow : Window
     public MainWindow(MftSession? session, string? sessionError, string? scanTarget, string? startPage = null)
     {
         InitializeComponent();
+        Window_StateChanged(this, EventArgs.Empty);
         _storagePage.StatusChanged += SetStatus;
         _storagePage.AttachSession(session, sessionError);
         _storagePage.SessionChanged += UpdateElevationStatus;
@@ -31,11 +32,13 @@ public partial class MainWindow : Window
         }
 
         _tray = CreateTray();
+        _alerts = new Monitoring.AlertService((title, message) => _tray.ShowBalloonTip(5000, title, message, Forms.ToolTipIcon.Warning));
         _hotkeys = new Monitoring.GlobalHotkeys(this);
         RegisterHotkeys();
         SettingsPage.SettingsChanged += () =>
         {
             RegisterHotkeys();
+            _alerts.ApplySettings();
             _widget?.ApplySettings();
         };
         if (App.Settings.WidgetVisible)
@@ -53,6 +56,17 @@ public partial class MainWindow : Window
     }
 
     private readonly Monitoring.GlobalHotkeys _hotkeys;
+    private readonly Monitoring.AlertService _alerts;
+
+    /// <summary>Ouvre une page (depuis le widget ou la zone de notification).</summary>
+    public void OpenPage(string destination)
+    {
+        ShowFromTray();
+        if (Navigation.Children.OfType<Button>().FirstOrDefault(b => b.Uid == destination) is { } button)
+        {
+            Navigation_Click(button, new RoutedEventArgs());
+        }
+    }
     private Monitoring.WidgetWindow? _widget;
     private Monitoring.MonitoringPage? _monitoringPage;
 
@@ -116,7 +130,7 @@ public partial class MainWindow : Window
                 "History" => new HistoryPage(),
                 "Monitoring" => _monitoringPage = new Monitoring.MonitoringPage(ToggleWidget),
                 "Cleaning" => new CleaningPage(this),
-                "Optimization" => PlaceholderPage.Create("Optimisation", "Optimisation de Windows", "Démarrage, services, alimentation et réglages, avec avertissements et restauration : en cours de développement."),
+                "Optimization" => new OptimizationPage(this),
                 _ => _storagePage
             };
             _pages[destination] = page;
@@ -139,6 +153,29 @@ public partial class MainWindow : Window
         ElevationStatus.Text = _storagePage.HasActiveSession
             ? "Hors ligne · analyse rapide autorisée pour cette session"
             : "Hors ligne · analyse rapide non autorisée (analyse standard)";
+
+    // ───────────────────────────── Barre de titre intégrée ─────────────────────────────
+
+    private void Minimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+
+    private void Maximize_Click(object sender, RoutedEventArgs e) =>
+        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+
+    private void Close_Click(object sender, RoutedEventArgs e) => Close();
+
+    private void Window_StateChanged(object? sender, EventArgs e)
+    {
+        var maximized = WindowState == WindowState.Maximized;
+        // Fenêtre agrandie : Windows déborde de l'écran de l'épaisseur du cadre ; on la compense.
+        var frame = SystemParameters.WindowResizeBorderThickness;
+        WindowFrame.Margin = maximized
+            ? new Thickness(frame.Left + 2, frame.Top + 2, frame.Right + 2, frame.Bottom + 2)
+            : new Thickness(0);
+        WindowFrame.BorderThickness = maximized ? new Thickness(0) : new Thickness(1);
+        WindowFrame.BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x30, 0x3B, 0x4B));
+        MaximizeButton.Content = maximized ? "" : "";
+        MaximizeButton.ToolTip = maximized ? "Niveau inférieur" : "Agrandir";
+    }
 
     // ───────────────────────────── Zone de notification ─────────────────────────────
 
@@ -208,6 +245,7 @@ public partial class MainWindow : Window
         _tray.Visible = false;
         _tray.Dispose();
         _hotkeys.Dispose();
+        _alerts.Dispose();
         _widget?.Close();
         Infrastructure.Monitoring.SystemMonitor.Shared.Dispose();
         // Fermeture du composant élevé hors du fil d'interface (pas d'interblocage), 3 s au plus.

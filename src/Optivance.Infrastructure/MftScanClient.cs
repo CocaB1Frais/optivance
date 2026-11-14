@@ -356,6 +356,57 @@ public sealed class MftSession : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Réglage d'optimisation (commande au format exact attendu par le composant, qui la refuse
+    /// sinon). Renvoie le code de l'outil Windows (0 = succès ; -2 = commande refusée).
+    /// </summary>
+    public async Task<int> TuneAsync(string command, CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (!IsActive)
+            {
+                throw new ScanEngineException("session-closed", "Le composant administrateur n’est plus disponible.");
+            }
+            try
+            {
+                await _pipe.WriteAsync(Encoding.UTF8.GetBytes(command + "\n"), cancellationToken);
+                await _pipe.FlushAsync(cancellationToken);
+                // Une commande refusée n'a pas de réponse : délai court puis -2.
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(TimeSpan.FromSeconds(30));
+                try
+                {
+                    while (await _reader.ReadLineAsync(timeout.Token) is { } line)
+                    {
+                        if (line.Span.StartsWith("{\"v\":3,\"type\":\"tune\""u8))
+                        {
+                            using var document = System.Text.Json.JsonDocument.Parse(line);
+                            return document.RootElement.GetProperty("code").GetInt32();
+                        }
+                    }
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    _broken = true;
+                    return -2;
+                }
+                _broken = true;
+                throw new ScanEngineException("session-closed", "Le composant administrateur a fermé le canal.");
+            }
+            catch (Exception exception) when (exception is IOException and not ScanEngineException or System.Text.Json.JsonException or ObjectDisposedException)
+            {
+                _broken = true;
+                throw new ScanEngineException("session-closed", $"Le composant administrateur ne répond plus ({exception.Message}).");
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     private static readonly System.Text.Json.JsonSerializerOptions ReportOptions = new() { PropertyNameCaseInsensitive = true };
 
     public async ValueTask DisposeAsync()

@@ -1,4 +1,4 @@
-<UserControl x:Class="Optivance.Desktop.StoragePage"
+﻿<UserControl x:Class="Optivance.Desktop.StoragePage"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:storage="clr-namespace:Optivance.Desktop.Storage"
@@ -281,6 +281,9 @@
                 </ListView.View>
               </ListView>
             </DockPanel>
+          </TabItem>
+          <TabItem x:Name="FinderTab" Header="Gros fichiers et doublons">
+            <storage:FinderView x:Name="Finder" />
           </TabItem>
         </TabControl>
       </Border>

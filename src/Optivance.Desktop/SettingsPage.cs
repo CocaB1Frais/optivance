@@ -70,6 +70,20 @@ public sealed class SettingsPage : UserControl
         Toggle(widget, "Afficher les températures", null, S.WidgetShowTemperatures, value => S.WidgetShowTemperatures = value);
         Toggle(widget, "Afficher les FPS", "Lus par les événements d’affichage de Windows, sans toucher au jeu (autorisation administrateur requise).", S.WidgetShowFps, value => S.WidgetShowFps = value);
         Toggle(widget, "Afficher le réseau", null, S.WidgetShowNetwork, value => S.WidgetShowNetwork = value);
+        Toggle(widget, "Afficher la consommation de la carte graphique", null, S.WidgetShowGpuPower, value => S.WidgetShowGpuPower = value);
+        Toggle(widget, "Afficher l’espace disque", "Espace libre du disque système.", S.WidgetShowDisk, value => S.WidgetShowDisk = value);
+        Toggle(widget, "Widget réduit", "Une seule ligne, sans titre (aussi accessible par clic droit sur le widget).", S.WidgetCompact, value => S.WidgetCompact = value);
+
+        var alerts = Section("Alertes");
+        (string, int)[] temperatures = [.. Enumerable.Range(0, 13).Select(i => ($"{60 + i * 5} °C", 60 + i * 5))];
+        Toggle(alerts, "Alerte de température du processeur", "Si Windows fournit la température (sans pilote).", S.AlertCpuTemperature, value => S.AlertCpuTemperature = value);
+        Choice(alerts, "Seuil processeur", null, temperatures, S.AlertCpuCelsius, value => S.AlertCpuCelsius = value);
+        Toggle(alerts, "Alerte de température de la carte graphique", null, S.AlertGpuTemperature, value => S.AlertGpuTemperature = value);
+        Choice(alerts, "Seuil carte graphique", null, temperatures, S.AlertGpuCelsius, value => S.AlertGpuCelsius = value);
+        Toggle(alerts, "Alerte d’espace disque faible", "Vérifiée une fois par minute sur tous les disques internes.", S.AlertDiskSpace, value => S.AlertDiskSpace = value);
+        Choice(alerts, "Seuil d’espace libre", null, [("5 %", 5), ("10 %", 10), ("15 %", 15), ("20 %", 20), ("25 %", 25)], S.AlertDiskFreePercent, value => S.AlertDiskFreePercent = value);
+        Toggle(alerts, "Notification Windows", "Une notification par dépassement, pas de répétition.", S.AlertNotification, value => S.AlertNotification = value);
+        Toggle(alerts, "Son", null, S.AlertSound, value => S.AlertSound = value);
 
         var history = Section("Historique");
         Choice(history, "Conserver l’historique", null, [("30 jours", 30), ("90 jours", 90), ("6 mois", 180), ("1 an", 365)], S.HistoryRetentionDays, value => S.HistoryRetentionDays = value);

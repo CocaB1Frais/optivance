@@ -1,3 +1,4 @@
+﻿using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -40,7 +41,7 @@ public sealed class WidgetWindow : Window
             CornerRadius = new CornerRadius(10),
             Padding = new Thickness(12, 8, 12, 8),
             Child = _rows,
-            ToolTip = "Glisser pour déplacer · réglages dans Paramètres › Widget"
+            ToolTip = "Glisser pour déplacer · clic droit : indicateurs, réduire, alertes"
         };
         MouseLeftButtonDown += (_, e) =>
         {
@@ -53,6 +54,17 @@ public sealed class WidgetWindow : Window
             }
         };
         SourceInitialized += (_, _) => ApplyWindowStyles();
+        if (AlertService.Current is { } alerts)
+        {
+            alerts.Changed += () =>
+            {
+                _lastDisk = DateTime.MinValue;
+                if (IsVisible && SystemMonitor.Shared.Last is { } last)
+                {
+                    Show(last);
+                }
+            };
+        }
         IsVisibleChanged += (_, _) =>
         {
             if (IsVisible)
@@ -76,17 +88,27 @@ public sealed class WidgetWindow : Window
         Opacity = settings.WidgetOpacity;
         _rows.Children.Clear();
         _values.Clear();
-        var header = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
-        header.Children.Add(new Image { Source = new System.Windows.Media.Imaging.BitmapImage(new Uri("pack://application:,,,/Assets/icon.png")), Width = 14, Height = 14, Margin = new Thickness(0, 0, 6, 0) });
-        header.Children.Add(new TextBlock { Text = "OPTIVANCE", FontSize = 10, FontWeight = FontWeights.SemiBold, Foreground = new SolidColorBrush(Color.FromRgb(0x8C, 0x99, 0xAC)) });
-        _rows.Children.Add(header);
+        _compact = settings.WidgetCompact;
+        _rows.Orientation = _compact ? Orientation.Horizontal : Orientation.Vertical;
+        if (!_compact)
+        {
+            var header = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
+            header.Children.Add(new Image { Source = new System.Windows.Media.Imaging.BitmapImage(new Uri("pack://application:,,,/Assets/icon.png")), Width = 14, Height = 14, Margin = new Thickness(0, 0, 6, 0) });
+            header.Children.Add(new TextBlock { Text = "OPTIVANCE", FontSize = 10, FontWeight = FontWeights.SemiBold, Foreground = new SolidColorBrush(Color.FromRgb(0x8C, 0x99, 0xAC)) });
+            _rows.Children.Add(header);
+        }
         if (settings.WidgetShowFps) Row("fps", "FPS", Color.FromRgb(0x72, 0xE0, 0xB1));
         if (settings.WidgetShowCpu) Row("cpu", "CPU", Color.FromRgb(0x4F, 0x8D, 0xF5));
         if (settings.WidgetShowGpu) Row("gpu", "GPU", Color.FromRgb(0x3C, 0xC4, 0x8A));
         if (settings.WidgetShowTemperatures) Row("temp", "Temp.", Color.FromRgb(0xF2, 0xB3, 0x3D));
-        if (settings.WidgetShowGpu) Row("power", "Conso GPU", Color.FromRgb(0xE8, 0x61, 0x5A));
+        if (settings.WidgetShowGpuPower) Row("power", "Conso GPU", Color.FromRgb(0xE8, 0x61, 0x5A));
         if (settings.WidgetShowMemory) Row("ram", "RAM", Color.FromRgb(0x9B, 0x6C, 0xF0));
         if (settings.WidgetShowNetwork) Row("net", "Réseau", Color.FromRgb(0x2F, 0xC4, 0xD6));
+        if (settings.WidgetShowDisk) Row("disk", "Disque", Color.FromRgb(0xC9, 0xD3, 0xE0));
+        if (_values.Count == 0)
+        {
+            _rows.Children.Add(new TextBlock { Text = "Aucun indicateur : clic droit pour en choisir", FontSize = 11, Foreground = Brushes.White });
+        }
         if (double.IsFinite(settings.WidgetLeft) && double.IsFinite(settings.WidgetTop))
         {
             Left = settings.WidgetLeft;
@@ -97,49 +119,126 @@ public sealed class WidgetWindow : Window
             Left = SystemParameters.WorkArea.Right - 220;
             Top = SystemParameters.WorkArea.Top + 40;
         }
+        ContextMenu = BuildMenu();
         ApplyWindowStyles();
+        _lastDisk = DateTime.MinValue;
         if (SystemMonitor.Shared.Last is { } last)
         {
             Show(last);
         }
     }
 
-    private void Row(string key, string label, Color color)
+    private bool _compact;
+    private DateTime _lastDisk = DateTime.MinValue;
+    private static readonly Brush AlertBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0x6B, 0x5E));
+    private static readonly Brush WarnBrush = new SolidColorBrush(Color.FromRgb(0xF2, 0xB8, 0x4B));
+
+    /// <summary>Clic droit : indicateurs, mode réduit, clics à travers, masquer.</summary>
+    private ContextMenu BuildMenu()
     {
-        var row = new DockPanel { Margin = new Thickness(0, 1, 0, 1), MinWidth = 170 };
-        var value = new TextBlock { Text = "…", FontSize = 13, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White, Margin = new Thickness(14, 0, 0, 0) };
-        DockPanel.SetDock(value, Dock.Right);
-        row.Children.Add(value);
-        var name = new StackPanel { Orientation = Orientation.Horizontal };
-        name.Children.Add(new Border { Width = 6, Height = 6, CornerRadius = new CornerRadius(3), Background = new SolidColorBrush(color), Margin = new Thickness(0, 0, 7, 0), VerticalAlignment = VerticalAlignment.Center });
-        name.Children.Add(new TextBlock { Text = label, FontSize = 12, Foreground = new SolidColorBrush(Color.FromRgb(0xC8, 0xD1, 0xDE)) });
-        row.Children.Add(name);
-        _values[key] = value;
-        _rows.Children.Add(row);
+        var s = App.Settings;
+        var menu = new ContextMenu();
+        MenuItem Check(string header, bool value, Action<bool> apply)
+        {
+            var item = new MenuItem { Header = header, IsCheckable = true, IsChecked = value, StaysOpenOnClick = true };
+            item.Click += (_, _) =>
+            {
+                apply(item.IsChecked);
+                App.Settings.Save();
+                Dispatcher.BeginInvoke(ApplySettings);
+            };
+            return item;
+        }
+        var indicators = new MenuItem { Header = "Indicateurs" };
+        indicators.Items.Add(Check("FPS", s.WidgetShowFps, v => s.WidgetShowFps = v));
+        indicators.Items.Add(Check("Processeur", s.WidgetShowCpu, v => s.WidgetShowCpu = v));
+        indicators.Items.Add(Check("Carte graphique", s.WidgetShowGpu, v => s.WidgetShowGpu = v));
+        indicators.Items.Add(Check("Températures", s.WidgetShowTemperatures, v => s.WidgetShowTemperatures = v));
+        indicators.Items.Add(Check("Consommation GPU", s.WidgetShowGpuPower, v => s.WidgetShowGpuPower = v));
+        indicators.Items.Add(Check("Mémoire", s.WidgetShowMemory, v => s.WidgetShowMemory = v));
+        indicators.Items.Add(Check("Réseau", s.WidgetShowNetwork, v => s.WidgetShowNetwork = v));
+        indicators.Items.Add(Check("Espace disque", s.WidgetShowDisk, v => s.WidgetShowDisk = v));
+        menu.Items.Add(indicators);
+        var compact = new MenuItem { Header = s.WidgetCompact ? "Agrandir le widget" : "Réduire le widget" };
+        compact.Click += (_, _) => { s.WidgetCompact = !s.WidgetCompact; s.Save(); ApplySettings(); };
+        menu.Items.Add(compact);
+        var through = new MenuItem { Header = "Laisser passer les clics (" + s.WidgetClickThroughHotkey + " pour revenir)" };
+        through.Click += (_, _) => { s.WidgetClickThrough = true; s.Save(); ApplyWindowStyles(); };
+        menu.Items.Add(through);
+        var reset = new MenuItem { Header = "Remettre en haut à droite" };
+        reset.Click += (_, _) => { s.WidgetLeft = double.NaN; s.WidgetTop = double.NaN; s.Save(); ApplySettings(); };
+        menu.Items.Add(reset);
+        menu.Items.Add(new Separator());
+        var settingsItem = new MenuItem { Header = "Alertes et réglages…" };
+        settingsItem.Click += (_, _) => (Application.Current.MainWindow as MainWindow)?.OpenPage("Settings");
+        menu.Items.Add(settingsItem);
+        var hide = new MenuItem { Header = "Masquer le widget (" + s.WidgetToggleHotkey + ")" };
+        hide.Click += (_, _) => (Application.Current.MainWindow as MainWindow)?.ToggleWidget();
+        menu.Items.Add(hide);
+        return menu;
     }
 
-    private void Set(string key, string text)
+    private void Row(string key, string label, Color color)
+    {
+        var value = new TextBlock { Text = "…", FontSize = _compact ? 12 : 13, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White, Margin = new Thickness(_compact ? 5 : 14, 0, 0, 0) };
+        var name = new StackPanel { Orientation = Orientation.Horizontal };
+        name.Children.Add(new Border { Width = 6, Height = 6, CornerRadius = new CornerRadius(3), Background = new SolidColorBrush(color), Margin = new Thickness(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center });
+        name.Children.Add(new TextBlock { Text = label, FontSize = _compact ? 11 : 12, Foreground = new SolidColorBrush(Color.FromRgb(0xC8, 0xD1, 0xDE)) });
+        if (_compact)
+        {
+            var cell = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 12, 0), VerticalAlignment = VerticalAlignment.Center };
+            cell.Children.Add(name);
+            cell.Children.Add(value);
+            _rows.Children.Add(cell);
+        }
+        else
+        {
+            var row = new DockPanel { Margin = new Thickness(0, 1, 0, 1), MinWidth = 170 };
+            DockPanel.SetDock(value, Dock.Right);
+            row.Children.Add(value);
+            row.Children.Add(name);
+            _rows.Children.Add(row);
+        }
+        _values[key] = value;
+    }
+
+    private void Set(string key, string text, bool alert = false)
     {
         if (_values.TryGetValue(key, out var block))
         {
             block.Text = text;
+            block.Foreground = alert ? AlertBrush : Brushes.White;
         }
     }
 
     private void Show(SystemSnapshot s)
     {
+        var alerts = AlertService.Current;
         Set("fps", s.Fps is { } fps ? MonitorFormat.Fps(fps) : "—");
         Set("cpu", MonitorFormat.Percent(s.CpuPercent));
         Set("gpu", MonitorFormat.Percent(s.GpuPercent));
         var temperatures = new List<string>();
         if (s.ThermalCelsius is { } cpu) temperatures.Add($"CPU {cpu:0}°");
         if (s.GpuCelsius is { } gpu) temperatures.Add($"GPU {gpu:0}°");
-        Set("temp", temperatures.Count == 0 ? "—" : string.Join("  ", temperatures));
+        Set("temp", temperatures.Count == 0 ? "—" : string.Join("  ", temperatures),
+            alerts is not null && (alerts.IsActive(AlertService.CpuKey) || alerts.IsActive(AlertService.GpuKey)));
         Set("power", MonitorFormat.Watts(s.GpuWatts));
-        Set("ram", $"{MonitorFormat.Percent(s.MemoryPercent)} · {StorageFormat.Bytes(s.MemoryUsed)}");
+        Set("ram", _compact ? MonitorFormat.Percent(s.MemoryPercent) : $"{MonitorFormat.Percent(s.MemoryPercent)} · {StorageFormat.Bytes(s.MemoryUsed)}");
         Set("net", $"↓ {MonitorFormat.Rate(s.NetworkDownBytesPerSecond)}  ↑ {MonitorFormat.Rate(s.NetworkUpBytesPerSecond)}");
+        if (_values.ContainsKey("disk") && DateTime.UtcNow - _lastDisk > TimeSpan.FromSeconds(30))
+        {
+            _lastDisk = DateTime.UtcNow;
+            var system = Path.GetPathRoot(Environment.SystemDirectory) ?? @"C:\";
+            var drive = AlertService.FixedDrives().FirstOrDefault(d => string.Equals(d.Name, system, StringComparison.OrdinalIgnoreCase));
+            var low = alerts?.LowDisks.Count > 0;
+            var text = drive is null ? "—" : $"{drive.Name.TrimEnd('\\')} {StorageFormat.Bytes((ulong)drive.AvailableFreeSpace)} libres";
+            if (low == true)
+            {
+                text += $" · faible : {string.Join(", ", alerts!.LowDisks.Keys)}";
+            }
+            Set("disk", text, low == true);
+        }
     }
-
     /// <summary>Hors d'Alt+Tab ; clics à travers si demandé (le widget ne capte plus la souris).</summary>
     private void ApplyWindowStyles()
     {

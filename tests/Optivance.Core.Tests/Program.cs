@@ -288,5 +288,93 @@ static List<ScanEntry> Sample() =>
     }
 }
 
+{
+    // Optimisation : formats Windows et sauvegarde des valeurs d'origine.
+    Check("démarrage : absent = activé", OptimizationCatalog.IsStartupApproved(null));
+    Check("démarrage : 02 activé, 03 désactivé", OptimizationCatalog.IsStartupApproved([2, 0, 0]) && !OptimizationCatalog.IsStartupApproved([3, 0, 0]) && !OptimizationCatalog.IsStartupApproved([7]));
+    Check("démarrage : valeur écrite relue", !OptimizationCatalog.IsStartupApproved(OptimizationCatalog.StartupApprovedValue(false, DateTime.UtcNow))
+        && OptimizationCatalog.IsStartupApproved(OptimizationCatalog.StartupApprovedValue(true, DateTime.UtcNow)));
+    Check("service : types de démarrage", OptimizationCatalog.StartMode(2, 1) == "delayed-auto" && OptimizationCatalog.StartMode(2, null) == "auto"
+        && OptimizationCatalog.StartMode(3, null) == "demand" && OptimizationCatalog.StartMode(4, null) == "disabled" && OptimizationCatalog.StartMode(null, null) == "unknown");
+    Check("optimisation : noms de services uniques", OptimizationCatalog.Services.Select(s => s.Name).Distinct().Count() == OptimizationCatalog.Services.Count);
+    var file = Path.Combine(Path.GetTempPath(), $"optivance-backup-{Guid.NewGuid():N}.json");
+    try
+    {
+        var backup = new OptimizationBackup(file);
+        backup.Remember("svc:SysMain", "auto");
+        backup.Remember("svc:SysMain", "disabled");
+        var reloaded = new OptimizationBackup(file);
+        Check("sauvegarde : première valeur d'origine conservée", reloaded.TryGet("svc:SysMain", out var original) && original == "auto");
+        reloaded.Forget("svc:SysMain");
+        Check("sauvegarde : oubli persistant", new OptimizationBackup(file).Values.Count == 0);
+        File.WriteAllText(file, "corrompu");
+        Check("sauvegarde : fichier corrompu toléré", new OptimizationBackup(file).Values.Count == 0);
+    }
+    finally
+    {
+        File.Delete(file);
+    }
+}
+
+{
+    // Alertes : une seule notification par dépassement, réarmement sous le seuil moins la marge.
+    var tracker = new AlertTracker();
+    Check("alerte : sous le seuil", !tracker.Evaluate("t", 80, 90, 3, true));
+    Check("alerte : franchissement", tracker.Evaluate("t", 91, 90, 3, true) && tracker.IsActive("t"));
+    Check("alerte : pas de répétition", !tracker.Evaluate("t", 95, 90, 3, true));
+    Check("alerte : reste active dans la marge", !tracker.Evaluate("t", 88, 90, 3, true) && tracker.IsActive("t"));
+    Check("alerte : réarmée", !tracker.Evaluate("t", 86, 90, 3, true) && !tracker.IsActive("t"));
+    Check("alerte : redéclenchée", tracker.Evaluate("t", 90, 90, 3, true));
+    Check("alerte : mesure absente sans effet", !tracker.Evaluate("t", null, 90, 3, true) && tracker.IsActive("t"));
+    Check("alerte : désactivée efface", !tracker.Evaluate("t", 99, 90, 3, true, enabled: false) && !tracker.IsActive("t"));
+    Check("alerte disque : espace libre bas", tracker.Evaluate("d", 8, 10, 2, false) && !tracker.Evaluate("d", 11, 10, 2, false) && tracker.IsActive("d"));
+}
+
+{
+    // Gros fichiers et doublons : vrais fichiers temporaires.
+    var root = Path.Combine(Path.GetTempPath(), "optivance-dup-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    try
+    {
+        var content = new byte[200_000];
+        new Random(7).NextBytes(content);
+        var different = (byte[])content.Clone();
+        different[^1] ^= 0xFF; // même taille, même début, fin différente
+        File.WriteAllBytes(Path.Combine(root, "a.mp4"), content);
+        File.WriteAllBytes(Path.Combine(root, "b.mp4"), content);
+        File.WriteAllBytes(Path.Combine(root, "c.mp4"), different);
+        File.WriteAllBytes(Path.Combine(root, "d.iso"), new byte[5000]);
+        File.WriteAllBytes(Path.Combine(root, "e.iso"), new byte[5000]);
+        var old = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc).ToFileTimeUtc();
+        var recent = DateTime.UtcNow.ToFileTimeUtc();
+        List<ScanEntry> entries =
+        [
+            new(0, -1, 1, 6, true, "R", 615_000, 615_000, false, recent),
+            new(1, 0, 0, 0, false, "a.mp4", 200_000, 200_000, false, old),
+            new(2, 0, 0, 0, false, "b.mp4", 200_000, 200_000, false, recent),
+            new(3, 0, 0, 0, false, "c.mp4", 200_000, 200_000, false, old),
+            new(4, 0, 0, 0, false, "d.iso", 5000, 5000, false, old),
+            new(5, 0, 0, 0, false, "e.iso", 5000, 5000, false, old),
+            new(6, 0, 0, 0, false, "lien.mp4", 200_000, 200_000, true, old), // lien physique : ignoré
+        ];
+        var tree = new StorageTree(root, entries);
+        Check("filtre : extensions", FileFilter.ParseExtensions("MP4, .iso *.mkv")!.SetEquals([".mp4", ".iso", ".mkv"]) && FileFilter.ParseExtensions("  ") is null);
+        Check("gros fichiers : taille minimale", FileFinder.LargeFiles(tree, new FileFilter(MinimumBytes: 100_000)).Order().SequenceEqual([1, 2, 3]));
+        Check("gros fichiers : extension", FileFinder.LargeFiles(tree, new FileFilter(Extensions: FileFilter.ParseExtensions("iso"))).Order().SequenceEqual([4, 5]));
+        Check("gros fichiers : plus anciens que", FileFinder.LargeFiles(tree, new FileFilter(MinimumBytes: 100_000, ModifiedBefore: DateTime.UtcNow.AddYears(-1))).Order().SequenceEqual([1, 3]));
+        Check("gros fichiers : lien physique exclu", !FileFinder.LargeFiles(tree, new FileFilter()).Contains(6));
+        var groups = await FileFinder.DuplicatesAsync(tree, new FileFilter(), null, CancellationToken.None);
+        var mp4 = groups.SingleOrDefault(g => g.Size == 200_000);
+        Check("doublons : contenu identique seulement", mp4 is not null && mp4.Ids.Order().SequenceEqual([1, 2]), string.Join(" | ", groups.Select(g => string.Join(",", g.Ids))));
+        Check("doublons : petits fichiers comparés", groups.Any(g => g.Size == 5000 && g.Ids.Count == 2));
+        Check("doublons : espace récupérable", mp4?.Recoverable == 200_000);
+        Check("doublons : garder le plus récent", FileFinder.AllButNewest(tree, [mp4!]).SequenceEqual([1]));
+    }
+    finally
+    {
+        Directory.Delete(root, recursive: true);
+    }
+}
+
 Console.WriteLine($"{passed} réussis, {failures} échoués");
 return failures == 0 ? 0 : 1;

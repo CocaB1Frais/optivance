@@ -4,7 +4,10 @@
         Title="OPTIVANCE" Height="820" Width="1360" MinHeight="620" MinWidth="980"
         Icon="pack://application:,,,/Assets/icon.png"
         Background="#10131A" Foreground="#EDF2F8" WindowStartupLocation="CenterScreen" WindowState="Maximized"
-        Closing="Window_Closing">
+        Closing="Window_Closing" StateChanged="Window_StateChanged">
+  <WindowChrome.WindowChrome>
+    <WindowChrome CaptionHeight="34" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False" />
+  </WindowChrome.WindowChrome>
   <Window.Resources>
     <FontFamily x:Key="NavIconFont">Segoe Fluent Icons, Segoe MDL2 Assets</FontFamily>
     <Style x:Key="NavButton" TargetType="Button">
@@ -31,9 +34,36 @@
         </Setter.Value>
       </Setter>
     </Style>
+    <Style x:Key="CaptionButton" TargetType="Button">
+      <Setter Property="Width" Value="46" />
+      <Setter Property="Foreground" Value="#B4BFCE" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+      <Setter Property="WindowChrome.IsHitTestVisibleInChrome" Value="True" />
+      <Setter Property="FontFamily" Value="{StaticResource NavIconFont}" />
+      <Setter Property="FontSize" Value="10" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border Background="{TemplateBinding Background}"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" /></Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="#232B38" /><Setter Property="Foreground" Value="#EDF2F8" /></Trigger>
+              <Trigger Property="IsPressed" Value="True"><Setter Property="Background" Value="#2C3646" /></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="CloseCaptionButton" TargetType="Button" BasedOn="{StaticResource CaptionButton}">
+      <Style.Triggers>
+        <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="#C42B1C" /><Setter Property="Foreground" Value="White" /></Trigger>
+      </Style.Triggers>
+    </Style>
   </Window.Resources>
+  <Border x:Name="WindowFrame">
   <Grid>
     <Grid.RowDefinitions>
+      <RowDefinition Height="34" />
       <RowDefinition Height="*" />
       <RowDefinition Height="30" />
     </Grid.RowDefinitions>
@@ -42,7 +72,21 @@
       <ColumnDefinition Width="*" />
     </Grid.ColumnDefinitions>
 
-    <Border Grid.Column="0" Background="#12161E" BorderBrush="#222A36" BorderThickness="0,0,1,0">
+    <Border Grid.Row="0" Grid.ColumnSpan="2" Background="#12161E" BorderBrush="#222A36" BorderThickness="0,0,0,1">
+      <DockPanel>
+        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+          <Button Style="{StaticResource CaptionButton}" ToolTip="Réduire" Click="Minimize_Click"><TextBlock Text="&#xE921;" FontFamily="{StaticResource NavIconFont}" FontSize="10" /></Button>
+          <Button x:Name="MaximizeButton" Style="{StaticResource CaptionButton}" ToolTip="Niveau inférieur" Click="Maximize_Click"><TextBlock x:Name="MaximizeGlyph" Text="&#xE923;" FontFamily="{StaticResource NavIconFont}" FontSize="10" /></Button>
+          <Button Style="{StaticResource CloseCaptionButton}" ToolTip="Fermer" Click="Close_Click"><TextBlock Text="&#xE8BB;" FontFamily="{StaticResource NavIconFont}" FontSize="10" /></Button>
+        </StackPanel>
+        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+          <Image Source="pack://application:,,,/Assets/icon.png" Width="16" Height="16" Margin="0,0,8,0" RenderOptions.BitmapScalingMode="HighQuality" />
+          <TextBlock Text="OPTIVANCE" FontSize="12" Foreground="#B4BFCE" VerticalAlignment="Center" />
+        </StackPanel>
+      </DockPanel>
+    </Border>
+
+    <Border Grid.Row="1" Grid.Column="0" Background="#12161E" BorderBrush="#222A36" BorderThickness="0,0,1,0">
       <DockPanel Margin="14,18,14,14">
         <Image DockPanel.Dock="Top" Source="pack://application:,,,/Assets/logo.png" Height="38" HorizontalAlignment="Left" Margin="6,0,0,26"
                RenderOptions.BitmapScalingMode="HighQuality" />
@@ -72,9 +116,9 @@
       </DockPanel>
     </Border>
 
-    <ContentControl x:Name="PageHost" Grid.Column="1" />
+    <ContentControl x:Name="PageHost" Grid.Row="1" Grid.Column="1" />
 
-    <Border Grid.Row="1" Grid.ColumnSpan="2" Background="#12161E" BorderBrush="#222A36" BorderThickness="0,1,0,0">
+    <Border Grid.Row="2" Grid.ColumnSpan="2" Background="#12161E" BorderBrush="#222A36" BorderThickness="0,1,0,0">
       <Grid Margin="18,0">
         <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
         <TextBlock x:Name="GlobalStatus" Text="Prêt" VerticalAlignment="Center" FontSize="10.5" Foreground="{StaticResource MutedTextBrush}" TextTrimming="CharacterEllipsis" />
@@ -82,4 +126,5 @@
       </Grid>
     </Border>
   </Grid>
+  </Border>
 </Window>
