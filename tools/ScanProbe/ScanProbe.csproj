@@ -1,0 +1,20 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Optivance.Core\Optivance.Core.csproj" />
+    <ProjectReference Include="..\..\src\Optivance.Infrastructure\Optivance.Infrastructure.csproj" />
+    <!-- Même binaire que l'application (cible explicite + CRT statique, voir Optivance.Desktop.csproj). -->
+    <None Include="..\..\engine\target\engine-v0-2\x86_64-pc-windows-msvc\release\optivance-engine.exe"
+          Link="moteur\optivance-engine.exe"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\engine\target\engine-v0-2\x86_64-pc-windows-msvc\release\optivance-mft-helper.exe"
+          Link="moteur\optivance-mft-helper.exe"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

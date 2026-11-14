@@ -1,0 +1,30 @@
+# Compile et teste OPTIVANCE à chaque envoi et chaque demande de fusion.
+name: CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Moteur Rust (tests)
+        working-directory: engine
+        run: cargo test --release --locked
+      - name: Tests .NET
+        run: dotnet run --project tests/Optivance.Core.Tests -c Release
+      - name: Compilation de l'application
+        run: dotnet build src/Optivance.Desktop -c Release

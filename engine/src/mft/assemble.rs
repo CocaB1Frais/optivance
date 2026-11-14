@@ -6,7 +6,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::HashMap;
+use crate::fasthash::FastMap as HashMap;
 
 use super::index::MftIndex;
 use crate::protocol::{Counters, Entry};
@@ -36,8 +36,8 @@ pub struct Assembled {
 pub fn assemble<E>(index: &MftIndex, mut query: impl FnMut(u128) -> Result<FileSizes, E>) -> Assembled {
     let mut stats = SizeStats::default();
     let mut counters = Counters { files: 0, directories: 0, warnings: 0, unique_logical_bytes: 0 };
-    let mut sizes: HashMap<u128, Option<FileSizes>> = HashMap::new();
-    let mut observed_links: HashMap<u128, u64> = HashMap::new();
+    let mut sizes: HashMap<u128, Option<FileSizes>> = HashMap::default();
+    let mut observed_links: HashMap<u128, u64> = HashMap::default();
     let mut entries = Vec::with_capacity(index.entries.len());
 
     for source in &index.entries {
@@ -72,6 +72,7 @@ pub fn assemble<E>(index: &MftIndex, mut query: impl FnMut(u128) -> Result<FileS
             unique_logical_bytes: if counted { logical } else { 0 },
             unique_allocated_bytes: if counted { allocated } else { 0 },
             hard_link_duplicate: source.hard_link_duplicate,
+            modified: 0,
         });
     }
 

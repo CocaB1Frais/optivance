@@ -1,0 +1,49 @@
+# Publie une version : pousser une étiquette vX.Y.Z identique à <Version> de Directory.Build.props.
+#   git tag v1.2.3 && git push --follow-tags
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Étiquette = version du projet
+        shell: pwsh
+        run: |
+          [xml]$props = Get-Content Directory.Build.props
+          $version = ($props.Project.PropertyGroup | Where-Object { $_.Version } | Select-Object -First 1).Version
+          if ("v$version" -ne "${{ github.ref_name }}") { throw "Étiquette ${{ github.ref_name }} différente de la version $version (Directory.Build.props)." }
+          "VERSION=$version" >> $env:GITHUB_ENV
+      - name: Tests du moteur
+        working-directory: engine
+        run: cargo test --release --locked
+      - name: Construction de la version portable
+        shell: pwsh
+        run: ./build.ps1
+      - name: Notes de version (section du CHANGELOG)
+        shell: pwsh
+        run: |
+          $text = Get-Content CHANGELOG.md -Raw
+          $match = [regex]::Match($text, "(?ms)^## $([regex]::Escape($env:VERSION))\b.*?(?=^## |\z)")
+          ($match.Success ? $match.Value : "Version $env:VERSION") | Set-Content notes.md -Encoding utf8
+      - name: Publication GitHub
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" "dist/OPTIVANCE-$env:VERSION-win-x64.zip" "dist/OPTIVANCE-$env:VERSION-win-x64.zip.sha256" `
+            --title "OPTIVANCE $env:VERSION" --notes-file notes.md

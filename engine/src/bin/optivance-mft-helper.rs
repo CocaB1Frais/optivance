@@ -1,24 +1,24 @@
-//! Helper MFT **expérimental** d'OPTIVANCE (D-06).
+//! Helper MFT d'OPTIVANCE (D-06), lancé avec élévation UAC à chaque analyse MFT.
 //!
-//! Lancé à chaque analyse MFT, avec élévation UAC, par l'interface non élevée. Il :
-//! - n'accepte qu'une lettre de volume et un nom de pipe au format de l'application ;
-//! - vérifie que le volume est NTFS, l'ouvre en lecture seule et énumère la MFT par
-//!   `FSCTL_ENUM_USN_DATA` (aucune lecture ni modification du journal USN) ;
-//! - lit tailles, nombre de liens et type de réanalyse par `OpenFileById` (attributs
-//!   seulement, sans rappel de données), puis complète les noms de hardlink par
-//!   `FindFirstFileNameW` ;
-//! - renvoie l'index au protocole v2 du scan classique, puis se termine.
-//! La seule commande acceptée sur le pipe est l'annulation.
+//! - N'accepte qu'une lettre de volume et un nom de pipe au format de l'application.
+//! - Vérifie que le volume est NTFS et l'ouvre en lecture seule.
+//! - Méthode principale `mft-raw` : lecture directe de la `$MFT` (noms, liens, tailles,
+//!   types de réanalyse et dates en une passe séquentielle).
+//! - Méthode de secours `mft-enum` (si la `$MFT` a une forme non prise en charge) :
+//!   `FSCTL_ENUM_USN_DATA` + `OpenFileById` + `FindFirstFileNameW`.
+//! - Aucune lecture ni modification du journal USN, aucun contenu de fichier, aucune écriture.
+//! - Renvoie l'index au protocole v3 du scan classique, puis se termine. La seule commande
+//!   acceptée sur le pipe est l'annulation.
 //!
-//! Tout résultat incomplet ou incohérent est signalé `interrupted` avec `"partial":true` :
-//! il n'est jamais présenté comme une analyse terminée.
+//! Tout résultat incomplet ou incohérent est signalé `interrupted` avec `"partial":true`.
 //!
-//! Correspondance des compteurs de profil (format v2 partagé avec le scan classique) :
-//! enumerationMs = énumération MFT ; fileInformationMs = métadonnées par référence ;
-//! metadataMs = complétion des hardlinks ; sortingMs = reconstruction de l'index.
+//! Compteurs de profil (format v3) : enumerationMs = lecture/énumération MFT ;
+//! fileInformationMs = métadonnées ; metadataMs = complétion des hardlinks (secours) ;
+//! sortingMs = reconstruction de l'index.
 
 #![forbid(unsafe_code)]
 
+use optivance_engine::fasthash::FastMap as HashMap;
 use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
 use std::io::BufWriter;
@@ -27,21 +27,25 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use optivance_engine::mft::args::parse_helper_args;
-use optivance_engine::mft::assemble::{assemble, SizeStats};
+use optivance_engine::mft::args::{parse_helper_args, parse_session_command, HelperMode, SessionCommand};
+use optivance_engine::mft::assemble::{assemble, FileSizes, SizeStats};
 use optivance_engine::mft::enumerate::{enumerate_with, EnumError, ERROR_ACCESS_DENIED};
 use optivance_engine::mft::index::{build_index, Diagnostics};
 use optivance_engine::mft::links::{complete_hard_links, LinkStats};
-use optivance_engine::mft::metadata::{collect, Collected};
+use optivance_engine::mft::metadata::{collect, Collected, FileInfo};
+use optivance_engine::mft::raw::{read_mft, read_mft_by_records, RawError, RawStats};
+use optivance_engine::mft::records::UsnRecord;
 use optivance_engine::mft::volume::{
-    fetch_mft_chunk, filesystem_name, hard_link_names, open_root, open_volume, query_file, restrict_dll_search_to_system32,
+    fetch_file_record, fetch_mft_chunk, filesystem_name, hard_link_names, ntfs_geometry, open_root, open_volume, open_volume_unbuffered, query_file,
+    read_volume_at,
+    restrict_dll_search_to_system32, RootDirectory,
 };
 use optivance_engine::protocol::{
     aggregate_unique_sizes, poll_cancel, send, send_entries, send_error_with_code, send_progress, serialize_summary, warn,
     Counters, Entry, Profile,
 };
 
-const HELLO: &str = "{\"v\":2,\"type\":\"hello\",\"protocol\":\"optivance.scan\",\"protocolVersion\":2,\"method\":\"mft\"}";
+const HELLO: &str = "{\"v\":3,\"type\":\"hello\",\"protocol\":\"optivance.scan\",\"protocolVersion\":3,\"method\":\"mft\"}";
 const ENUM_BUFFER_BYTES: usize = 1 << 20;
 const POLL_EVERY: u64 = 1_024;
 const PROGRESS_EVERY: u64 = 16_384;
@@ -70,8 +74,7 @@ impl Channel {
         self.cancelled.load(Ordering::Relaxed)
     }
 
-    /// Appelé à chaque opération coûteuse : annulation tous les POLL_EVERY appels,
-    /// progression (nombre d'opérations de l'étape en cours) tous les PROGRESS_EVERY.
+    /// Annulation tous les POLL_EVERY appels, progression tous les PROGRESS_EVERY.
     fn tick(&mut self) -> bool {
         self.calls += 1;
         if self.calls % PROGRESS_EVERY == 0 {
@@ -86,9 +89,36 @@ impl Channel {
         let _ = send_progress(&mut self.writer, &mut self.profile, &counters, elapsed);
     }
 
+    /// Nouvelle analyse dans la même session : compteurs, annulation et chronomètre remis à zéro.
+    fn reset(&mut self) {
+        self.profile = Profile::default();
+        self.cancelled.store(false, Ordering::Relaxed);
+        self.started = Instant::now();
+        self.calls = 0;
+    }
+
     fn fail(&mut self, code: &str, message: &str) -> std::io::Result<()> {
         send_error_with_code(&mut self.writer, &mut self.profile, message, Some(code))
     }
+}
+
+/// Résultat d'une méthode MFT, avant reconstruction de l'arborescence.
+struct Prepared {
+    method: &'static str,
+    records: Vec<UsnRecord>,
+    record_count: usize,
+    collected: Collected,
+    links: LinkStats,
+    raw: RawStats,
+    /// Dates de modification par référence (lecture directe seulement).
+    modified: HashMap<u128, u64>,
+    fallback_reason: Option<String>,
+}
+
+enum Outcome {
+    Ready(Prepared),
+    Cancelled,
+    Failed(&'static str, String),
 }
 
 fn main() {
@@ -103,7 +133,6 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let started = Instant::now();
     let args = parse_helper_args(std::env::args().skip(1))?;
     let pipe = OpenOptions::new()
         .read(true)
@@ -115,12 +144,67 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         profile: Profile::default(),
         cancelled: AtomicBool::new(false),
         commands: Vec::with_capacity(64),
-        started,
+        started: Instant::now(),
         calls: 0,
     };
     send(&mut channel.writer, &mut channel.profile, HELLO)?;
 
-    let letter = args.volume;
+    match args.mode {
+        HelperMode::Single(letter) => scan_volume(&mut channel, letter),
+        HelperMode::Session => {
+            // Composant de session : attend les commandes jusqu'à la fermeture de l'interface.
+            while let Some(line) = next_command(&mut channel)? {
+                match parse_session_command(&line) {
+                    SessionCommand::Scan(letter) => {
+                        channel.reset();
+                        scan_volume(&mut channel, letter)?;
+                    }
+                    SessionCommand::Clean { category, run } => {
+                        channel.reset();
+                        let report = optivance_engine::clean::clean_category(category, run, &mut || channel.poll());
+                        send(&mut channel.writer, &mut channel.profile, &report.to_json(category, run))?;
+                    }
+                    SessionCommand::Tune(command) => {
+                        let code = optivance_engine::tune::execute(&command);
+                        send(&mut channel.writer, &mut channel.profile, &optivance_engine::tune::result_json(code))?;
+                    }
+                    SessionCommand::Quit => break,
+                    SessionCommand::Unknown => {}
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Lit la prochaine ligne de commande (bloquant). `None` quand l'interface a fermé le canal.
+fn next_command(channel: &mut Channel) -> std::io::Result<Option<String>> {
+    use std::io::Read;
+    const MAX_COMMAND_BYTES: usize = 4096;
+    loop {
+        if let Some(newline) = channel.commands.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = channel.commands.drain(..=newline).collect();
+            return Ok(Some(String::from_utf8_lossy(&line).into_owned()));
+        }
+        if channel.commands.len() > MAX_COMMAND_BYTES {
+            channel.commands.clear();
+        }
+        let mut buffer = [0u8; 512];
+        let read = match (&*channel.writer.get_ref()).read(&mut buffer) {
+            Ok(read) => read,
+            // Canal fermé ou rompu : fin normale de la session.
+            Err(error) if matches!(error.raw_os_error(), Some(109 | 232 | 233)) => 0,
+            Err(error) => return Err(error),
+        };
+        if read == 0 {
+            return Ok(None);
+        }
+        channel.commands.extend_from_slice(&buffer[..read]);
+    }
+}
+
+/// Une analyse complète d'un volume ; les erreurs d'analyse sont envoyées à l'interface.
+fn scan_volume(channel: &mut Channel, letter: char) -> Result<(), Box<dyn std::error::Error>> {
     let root_name = format!("{letter}:\\");
     match filesystem_name(letter) {
         Ok(name) if name == "NTFS" => {}
@@ -131,51 +215,124 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Ok(root) => root,
         Err(error) => return Ok(channel.fail("volume-unavailable", &format!("Racine {root_name} inaccessible : {error}"))?),
     };
-    let root_id = u128::from(root.file_id);
     let volume = match open_volume(letter) {
-        Ok(volume) => volume,
+        Ok(volume) => File::from(volume),
         Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
             return Ok(channel.fail("access-denied", "Accès au volume refusé : l’analyse MFT exige l’élévation administrateur.")?);
         }
         Err(error) => return Ok(channel.fail("volume-unavailable", &format!("Ouverture du volume {root_name} impossible : {error}"))?),
     };
+    let root_id = u128::from(root.file_id);
 
-    // 1. Énumération MFT.
+    let prepared = match scan_raw(channel, &volume, letter) {
+        Outcome::Ready(prepared) => prepared,
+        Outcome::Cancelled => return send_interrupted_root(channel, &root_name),
+        Outcome::Failed(_, reason) => match scan_enum(channel, &volume, &root, letter, root_id) {
+            Outcome::Ready(mut prepared) => {
+                prepared.fallback_reason = Some(reason);
+                prepared
+            }
+            Outcome::Cancelled => return send_interrupted_root(channel, &root_name),
+            Outcome::Failed(code, message) => return Ok(channel.fail(code, &message)?),
+        },
+    };
+    drop(volume);
+    drop(root);
+    finish(channel, prepared, root_id, &root_name)
+}
+
+
+/// Méthode principale : lecture séquentielle de la `$MFT` (un seul fil de lecture, décodage parallèle).
+fn scan_raw(channel: &mut Channel, volume: &File, letter: char) -> Outcome {
+    let phase = Instant::now();
+    // Lecture brute sans cache quand c'est possible (disques 4K natifs) ; sinon le handle normal.
+    let unbuffered = open_volume_unbuffered(letter).ok().map(File::from);
+    let reader = unbuffered.as_ref().unwrap_or(volume);
+    let mut report = |done: u64, _total: u64| {
+        if done % (PROGRESS_EVERY * 8) < 4096 {
+            channel.progress(done);
+        }
+        channel.poll()
+    };
+    let mut read = read_mft(|offset, buffer| read_volume_at(reader, offset, buffer), &mut report);
+    if let Err(RawError::Io(volume_error)) = &read {
+        // Lecture brute du volume refusée (constaté sur un disque dur : erreur 50) : mêmes
+        // enregistrements, demandés un par un au système de fichiers (FSCTL_GET_NTFS_FILE_RECORD).
+        read = match ntfs_geometry(volume) {
+            Ok(geometry) if geometry.record_size > 0 => read_mft_by_records(
+                geometry.valid_bytes / geometry.record_size as u64,
+                |number, buffer| fetch_file_record(volume, number, buffer),
+                &mut report,
+            ),
+            Ok(_) => Err(RawError::Io(format!("{volume_error} ; géométrie NTFS invalide"))),
+            Err(error) => Err(RawError::Io(format!("{volume_error} ; géométrie NTFS : {error}"))),
+        };
+    }
+    channel.profile.enumeration_ns = phase.elapsed().as_nanos();
+    let raw = match read {
+        Ok(raw) => raw,
+        Err(RawError::Cancelled) => return Outcome::Cancelled,
+        Err(error) => return Outcome::Failed("raw-failed", error.to_string()),
+    };
+    // metadataMs (inutilisé par cette méthode) = durée de la fusion finale, incluse dans enumerationMs.
+    channel.profile.metadata_ns = (raw.stats.finish_ms * 1_000_000.0) as u128;
+
+    let phase = Instant::now();
+    let mut records = raw.records;
+    let record_count = records.len();
+    let (sizes, tags, modified) = (raw.sizes, raw.reparse_tags, raw.modified);
+    let collected = collect(&mut records, |file_id, want_tag| {
+        let sizes = sizes.get(&file_id).copied().unwrap_or(FileSizes { logical: 0, allocated: 0, links: 1 });
+        let reparse_tag = if want_tag { tags.get(&file_id).copied() } else { None };
+        Ok::<_, ()>(FileInfo { sizes, reparse_tag })
+    });
+    channel.profile.file_information_ns = phase.elapsed().as_nanos();
+    channel.profile.file_information_lookups = collected.queries;
+    Outcome::Ready(Prepared {
+        method: "mft-raw",
+        records,
+        record_count,
+        collected,
+        links: LinkStats::default(),
+        raw: raw.stats,
+        modified,
+        fallback_reason: None,
+    })
+}
+
+/// Méthode de secours : énumération FSCTL, ouvertures par référence, noms de hardlink.
+fn scan_enum(channel: &mut Channel, volume: &File, root: &RootDirectory, letter: char, root_id: u128) -> Outcome {
     let phase = Instant::now();
     let enumerated = enumerate_with(
         ENUM_BUFFER_BYTES,
-        |start, buffer| fetch_mft_chunk(&volume, start, buffer),
+        |start, buffer| fetch_mft_chunk(volume, start, buffer),
         |records| {
             channel.progress(records as u64);
             channel.poll()
         },
     );
-    drop(volume);
     channel.profile.enumeration_ns = phase.elapsed().as_nanos();
     let mut records = match enumerated {
         Ok(records) => records,
-        Err(EnumError::Cancelled) => return send_interrupted_root(&mut channel, &root_name),
-        Err(error) => return Ok(channel.fail(error.code(), &error.to_string())?),
+        Err(EnumError::Cancelled) => return Outcome::Cancelled,
+        Err(error) => return Outcome::Failed(error.code(), error.to_string()),
     };
     let record_count = records.len();
 
-    // 2. Métadonnées par référence, classement des points de réanalyse.
     let phase = Instant::now();
     channel.calls = 0;
     let collected = collect(&mut records, |file_id, want_tag| {
         if !channel.tick() {
             return Err(std::io::Error::other("annulé"));
         }
-        query_file(&root, file_id, want_tag)
+        query_file(root, file_id, want_tag)
     });
     channel.profile.file_information_ns = phase.elapsed().as_nanos();
     channel.profile.file_information_lookups = collected.queries;
-    drop(root);
     if channel.is_cancelled() {
-        return send_interrupted_root(&mut channel, &root_name);
+        return Outcome::Cancelled;
     }
 
-    // 3. Noms de hardlink absents de l'énumération.
     let phase = Instant::now();
     channel.calls = 0;
     let links = complete_hard_links(&mut records, root_id, &collected.sizes, |path| {
@@ -187,35 +344,51 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     channel.profile.metadata_ns = phase.elapsed().as_nanos();
     channel.profile.metadata_lookups = links.files_queried;
     if channel.is_cancelled() {
-        return send_interrupted_root(&mut channel, &root_name);
+        return Outcome::Cancelled;
     }
+    Outcome::Ready(Prepared {
+        method: "mft-enum",
+        records,
+        record_count,
+        collected,
+        links,
+        raw: RawStats::default(),
+        modified: HashMap::default(),
+        fallback_reason: None,
+    })
+}
 
-    // 4. Reconstruction de l'arborescence.
+fn finish(channel: &mut Channel, prepared: Prepared, root_id: u128, root_name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let phase = Instant::now();
-    let index = build_index(root_id, &root_name, records);
+    let Prepared { method, records, record_count, collected, links, raw, modified, fallback_reason } = prepared;
+    let index = build_index(root_id, root_name, records);
     channel.profile.sorting_ns = phase.elapsed().as_nanos();
 
-    // 5. Assemblage (aucune nouvelle ouverture) et agrégation.
     let mut assembled = assemble(&index, |file_id| collected.sizes.get(&file_id).copied().ok_or(()));
+    for (entry, source) in assembled.entries.iter_mut().zip(&index.entries) {
+        entry.modified = modified.get(&source.file_id).copied().unwrap_or(0);
+    }
     let phase = Instant::now();
     aggregate_unique_sizes(&mut assembled.entries);
     channel.profile.aggregation_ns = phase.elapsed().as_nanos();
 
-    // 6. Avertissements agrégés, puis résultats.
     let mut counters = assembled.counters;
-    let report = Report { diagnostics: &index.diagnostics, collected: &collected, links: &links, sizes: &assembled.stats };
-    let root_path = Path::new(&root_name);
+    let report = Report { diagnostics: &index.diagnostics, collected: &collected, links: &links, sizes: &assembled.stats, raw: &raw };
+    let root_path = Path::new(root_name);
+    if let Some(reason) = &fallback_reason {
+        warn(&mut channel.writer, &mut channel.profile, &mut counters, root_path, &format!("MFT : lecture directe impossible ({reason}) ; énumération de secours utilisée."))?;
+    }
     for (count, message) in report.problems() {
         if count > 0 {
             warn(&mut channel.writer, &mut channel.profile, &mut counters, root_path, &format!("MFT : {count} {message}"))?;
         }
     }
     let partial = report.is_partial();
-    send_progress(&mut channel.writer, &mut channel.profile, &counters, started.elapsed().as_millis() as u64)?;
+    send_progress(&mut channel.writer, &mut channel.profile, &counters, channel.started.elapsed().as_millis() as u64)?;
     let complete = send_entries(&mut channel.writer, &mut channel.profile, &assembled.entries, &channel.cancelled, &mut channel.commands)?;
     let state = if channel.is_cancelled() || !complete || partial { "interrupted" } else { "completed" };
-    let extra = report.fields(partial, record_count);
-    let total_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let extra = report.fields(method, partial, record_count);
+    let total_ms = channel.started.elapsed().as_secs_f64() * 1000.0;
     let summary = serialize_summary(state, &counters, &assembled.entries[0], &channel.profile, total_ms, &extra);
     send(&mut channel.writer, &mut channel.profile, &summary)?;
     Ok(())
@@ -226,10 +399,11 @@ struct Report<'a> {
     collected: &'a Collected,
     links: &'a LinkStats,
     sizes: &'a SizeStats,
+    raw: &'a RawStats,
 }
 
 impl Report<'_> {
-    fn problems(&self) -> [(u64, &'static str); 10] {
+    fn problems(&self) -> [(u64, &'static str); 11] {
         let d = self.diagnostics;
         [
             (d.unreachable_files, "référence(s) non rattachée(s) à la racine (parent absent, périmé ou cycle)"),
@@ -242,6 +416,7 @@ impl Report<'_> {
             (self.sizes.failures, "fichier(s) indexé(s) sans taille lisible (comptés 0 octet)"),
             (self.links.failures + self.links.unresolved_names, "nom(s) de hardlink non résolu(s)"),
             (self.sizes.missing_link_names, "nom(s) de hardlink déclaré(s) par NTFS mais absent(s) de l’index"),
+            (self.raw.corrupt, "enregistrement(s) $MFT illisible(s) (volume modifié pendant la lecture ?)"),
         ]
     }
 
@@ -252,16 +427,22 @@ impl Report<'_> {
             || self.sizes.missing_link_names > 0
             || self.links.failures > 0
             || self.links.unresolved_names > 0
+            || self.raw.corrupt > 0
     }
 
-    fn fields(&self, partial: bool, records: usize) -> String {
-        let (d, c, l, s) = (self.diagnostics, self.collected, self.links, self.sizes);
+    fn fields(&self, method: &str, partial: bool, records: usize) -> String {
+        let (d, c, l, s, r) = (self.diagnostics, self.collected, self.links, self.sizes, self.raw);
         let mut tags = String::new();
         for (index, (tag, count)) in c.reparse.by_tag.iter().enumerate() {
             let _ = write!(tags, "{}\"0x{tag:08X}\":{count}", if index == 0 { "" } else { "," });
         }
         format!(
-            ",\"method\":\"mft\",\"partial\":{partial},\"mft\":{{\"records\":{records},\"unreachable\":{},\"staleParents\":{},\"conflictingKinds\":{},\"extraDirectoryLinks\":{},\"duplicateRecords\":{},\"reparsePointsSkipped\":{},\"reparseFollowed\":{},\"reparseTags\":{{{tags}}},\"metadataQueries\":{},\"metadataFailures\":{},\"sizeFailures\":{},\"linkFilesQueried\":{},\"linkNamesAdded\":{},\"linkUnresolved\":{},\"linkFailures\":{},\"missingLinkNames\":{}}}",
+            ",\"method\":\"mft\",\"mftMethod\":\"{method}\",\"partial\":{partial},\"mft\":{{\"records\":{records},\"mftRecordsRead\":{},\"mftInUse\":{},\"mftCorrupt\":{},\"orphanExtensions\":{},\"systemExcluded\":{},\"unreachable\":{},\"staleParents\":{},\"conflictingKinds\":{},\"extraDirectoryLinks\":{},\"duplicateRecords\":{},\"reparsePointsSkipped\":{},\"reparseFollowed\":{},\"reparseTags\":{{{tags}}},\"metadataQueries\":{},\"metadataFailures\":{},\"sizeFailures\":{},\"linkFilesQueried\":{},\"linkNamesAdded\":{},\"linkUnresolved\":{},\"linkFailures\":{},\"missingLinkNames\":{}}}",
+            r.records_read,
+            r.in_use,
+            r.corrupt,
+            r.orphan_extensions,
+            r.system_excluded,
             d.unreachable_files,
             d.stale_parent_references,
             d.conflicting_kinds,
@@ -294,6 +475,7 @@ fn send_interrupted_root(channel: &mut Channel, root_name: &str) -> Result<(), B
         unique_logical_bytes: 0,
         unique_allocated_bytes: 0,
         hard_link_duplicate: false,
+        modified: 0,
     };
     let entries = [root];
     send_entries(&mut channel.writer, &mut channel.profile, &entries, &channel.cancelled, &mut channel.commands)?;

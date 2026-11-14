@@ -16,6 +16,8 @@ public sealed record ScanWarning(string Path, string Message) : ScanUpdate;
 /// <summary>
 /// One row in the compact, flat scan index. Directory children occupy a contiguous ID range.
 /// Paths are reconstructed on demand from the root and parent IDs rather than repeated in IPC.
+/// For a directory, the byte counts are the unique totals of its subtree.
+/// <see cref="Modified"/> is a UTC FILETIME (0 when unknown).
 /// </summary>
 public readonly record struct ScanEntry(
     int Id,
@@ -26,7 +28,16 @@ public readonly record struct ScanEntry(
     string Name,
     ulong LogicalBytes,
     ulong AllocatedBytes,
-    bool IsHardLinkDuplicate);
+    bool IsHardLinkDuplicate,
+    long Modified = 0);
+
+/// <summary>Méthode d'analyse réellement utilisée.</summary>
+public static class ScanMethods
+{
+    public const string Classic = "classic";
+    public const string MftRaw = "mft-raw";
+    public const string MftEnum = "mft-enum";
+}
 
 public sealed record ScanEngineMetrics(
     double TotalMilliseconds,
@@ -48,7 +59,9 @@ public sealed record ScanClientMetrics(
     double JsonProcessingMilliseconds,
     double IndexValidationMilliseconds,
     long EntriesReceived,
-    long ResultBatches);
+    long ResultBatches,
+    /// <summary>Durée depuis la connexion du moteur (exclut l'attente de l'UAC) ; 0 si non mesurée.</summary>
+    double SinceConnectionMilliseconds = 0);
 
 public sealed record ScanSummary(
     ScanState State,
@@ -59,6 +72,9 @@ public sealed record ScanSummary(
     ulong UniqueAllocatedBytes,
     TimeSpan Elapsed,
     ScanEngineMetrics EngineMetrics,
-    ScanClientMetrics ClientMetrics);
+    ScanClientMetrics ClientMetrics,
+    string Method = ScanMethods.Classic,
+    bool IsPartial = false,
+    string? Notice = null);
 
 public sealed record ScanResult(ScanSummary Summary, IReadOnlyList<ScanEntry> Entries);

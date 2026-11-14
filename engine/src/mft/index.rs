@@ -15,7 +15,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use crate::fasthash::{FastMap as HashMap, FastSet as HashSet};
 
 use super::records::UsnRecord;
 
@@ -82,7 +82,7 @@ pub fn build_index(root_id: u128, root_name: &str, records: Vec<UsnRecord>) -> M
     let mut diagnostics = Diagnostics { records: records.len() as u64, ..Diagnostics::default() };
 
     // Attributs retenus par référence : ceux du premier enregistrement vu.
-    let mut attributes: HashMap<u128, u32> = HashMap::with_capacity(records.len());
+    let mut attributes: HashMap<u128, u32> = HashMap::with_capacity_and_hasher(records.len(), Default::default());
     for record in &records {
         match attributes.entry(record.file_id) {
             Entry::Occupied(known) => {
@@ -109,7 +109,7 @@ pub fn build_index(root_id: u128, root_name: &str, records: Vec<UsnRecord>) -> M
 
     // Liens par dossier parent ; la racine elle-même n'est jamais rattachée à un parent.
     let links: Vec<UsnRecord> = records.into_iter().filter(|record| record.file_id != root_id).collect();
-    let mut children: HashMap<u128, Vec<usize>> = HashMap::new();
+    let mut children: HashMap<u128, Vec<usize>> = HashMap::default();
     for (position, link) in links.iter().enumerate() {
         children.entry(link.parent_id).or_default().push(position);
     }
@@ -132,8 +132,8 @@ pub fn build_index(root_id: u128, root_name: &str, records: Vec<UsnRecord>) -> M
         is_directory: true,
         hard_link_duplicate: false,
     }];
-    let mut reached: HashSet<u128> = HashSet::with_capacity(attributes.len());
-    let mut placed_directories: HashSet<u128> = HashSet::new();
+    let mut reached: HashSet<u128> = HashSet::with_capacity_and_hasher(attributes.len(), Default::default());
+    let mut placed_directories: HashSet<u128> = HashSet::default();
     reached.insert(root_id);
     placed_directories.insert(root_id);
     let mut pending = vec![(root_id, 0usize)];

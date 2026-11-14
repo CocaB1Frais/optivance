@@ -9,7 +9,8 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
+use crate::fasthash::{FastMap as HashMap, FastSet as HashSet};
 
 use super::assemble::FileSizes;
 use super::index::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT};
@@ -47,8 +48,8 @@ pub struct Collected {
 /// `query(file_id, want_reparse_tag)` ouvre la référence et lit ses métadonnées.
 pub fn collect<E>(records: &mut [UsnRecord], mut query: impl FnMut(u128, bool) -> Result<FileInfo, E>) -> Collected {
     let mut collected = Collected::default();
-    let mut seen: HashSet<u128> = HashSet::with_capacity(records.len());
-    let mut followed: HashSet<u128> = HashSet::new();
+    let mut seen: HashSet<u128> = HashSet::with_capacity_and_hasher(records.len(), Default::default());
+    let mut followed: HashSet<u128> = HashSet::default();
 
     for record in records.iter() {
         let is_directory = record.attributes & FILE_ATTRIBUTE_DIRECTORY != 0;

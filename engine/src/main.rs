@@ -113,7 +113,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     send(
         &mut writer,
         &mut profile,
-        "{\"v\":2,\"type\":\"hello\",\"protocol\":\"optivance.scan\",\"protocolVersion\":2}",
+        "{\"v\":3,\"type\":\"hello\",\"protocol\":\"optivance.scan\",\"protocolVersion\":3,\"method\":\"classic\"}",
     )?;
 
     let cancelled = AtomicBool::new(false);
@@ -150,6 +150,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         unique_logical_bytes: 0,
         unique_allocated_bytes: 0,
         hard_link_duplicate: false,
+        modified: metadata.last_write_time(),
     }];
     let mut pending = vec![(root, 0usize)];
     let mut hard_link_identities: HashSet<FileIdentity> = HashSet::new();
@@ -240,6 +241,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     unique_logical_bytes: 0,
                     unique_allocated_bytes: 0,
                     hard_link_duplicate: false,
+                    modified: child_metadata.last_write_time(),
                 });
                 counters.directories += 1;
                 child_directories.push((child_path, index));
@@ -274,6 +276,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     unique_logical_bytes: if hard_link_duplicate { 0 } else { logical_bytes },
                     unique_allocated_bytes: if hard_link_duplicate { 0 } else { details.allocation_size },
                     hard_link_duplicate,
+                    modified: child_metadata.last_write_time(),
                 });
                 counters.files += 1;
                 if !hard_link_duplicate {

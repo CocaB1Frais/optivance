@@ -1,80 +1,256 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
+using Optivance.Core;
+using Optivance.Infrastructure;
+using Forms = System.Windows.Forms;
 
 namespace Optivance.Desktop;
 
 public partial class MainWindow : Window
 {
     private readonly StoragePage _storagePage = new();
-    private bool _allowClose;
+    private readonly Dictionary<string, UIElement> _pages = [];
+    private readonly Forms.NotifyIcon _tray;
+    private bool _exiting;
+    private bool _trayHintShown;
 
-    public MainWindow()
+    public MainWindow(MftSession? session, string? sessionError, string? scanTarget, string? startPage = null)
     {
         InitializeComponent();
+        Window_StateChanged(this, EventArgs.Empty);
         _storagePage.StatusChanged += SetStatus;
+        _storagePage.AttachSession(session, sessionError);
+        _storagePage.SessionChanged += UpdateElevationStatus;
+        _pages["Storage"] = _storagePage;
         PageHost.Content = _storagePage;
-        UpdateNavigation(StorageNavigation);
+        Select(StorageNavigation);
+        UpdateElevationStatus();
+        if (sessionError is not null)
+        {
+            SetStatus(sessionError);
+        }
+
+        _tray = CreateTray();
+        _alerts = new Monitoring.AlertService((title, message) => _tray.ShowBalloonTip(5000, title, message, Forms.ToolTipIcon.Warning));
+        _hotkeys = new Monitoring.GlobalHotkeys(this);
+        RegisterHotkeys();
+        SettingsPage.SettingsChanged += () =>
+        {
+            RegisterHotkeys();
+            _alerts.ApplySettings();
+            _widget?.ApplySettings();
+        };
+        if (App.Settings.WidgetVisible)
+        {
+            ShowWidget(true);
+        }
+        if (startPage is not null && Navigation.Children.OfType<Button>().FirstOrDefault(b => b.Uid == startPage) is { } startButton)
+        {
+            Loaded += (_, _) => Navigation_Click(startButton, new RoutedEventArgs());
+        }
+        if (scanTarget is not null)
+        {
+            Loaded += (_, _) => _storagePage.ScanAtStartup(scanTarget);
+        }
     }
+
+    private readonly Monitoring.GlobalHotkeys _hotkeys;
+    private readonly Monitoring.AlertService _alerts;
+
+    /// <summary>Ouvre une page (depuis le widget ou la zone de notification).</summary>
+    public void OpenPage(string destination)
+    {
+        ShowFromTray();
+        if (Navigation.Children.OfType<Button>().FirstOrDefault(b => b.Uid == destination) is { } button)
+        {
+            Navigation_Click(button, new RoutedEventArgs());
+        }
+    }
+    private Monitoring.WidgetWindow? _widget;
+    private Monitoring.MonitoringPage? _monitoringPage;
+
+    // ───────────────────────────── Widget et raccourcis ─────────────────────────────
+
+    private void RegisterHotkeys()
+    {
+        var refused = _hotkeys.Register(
+        [
+            (App.Settings.WidgetToggleHotkey, ToggleWidget),
+            (App.Settings.WidgetClickThroughHotkey, ToggleClickThrough)
+        ]);
+        if (refused.Count > 0)
+        {
+            SetStatus($"Raccourci indisponible (déjà utilisé par une autre application ?) : {string.Join(", ", refused)}");
+        }
+    }
+
+    public void ToggleWidget() => ShowWidget(!(App.Settings.WidgetVisible && _widget is { IsVisible: true }));
+
+    private void ShowWidget(bool visible)
+    {
+        if (visible)
+        {
+            _widget ??= new Monitoring.WidgetWindow();
+            _widget.ApplySettings();
+            _widget.Show();
+        }
+        else
+        {
+            _widget?.Hide();
+        }
+        App.Settings.WidgetVisible = visible;
+        App.Settings.Save();
+        _monitoringPage?.RefreshWidgetButton();
+    }
+
+    private void ToggleClickThrough()
+    {
+        App.Settings.WidgetClickThrough = !App.Settings.WidgetClickThrough;
+        App.Settings.Save();
+        _widget?.ApplySettings();
+        SetStatus(App.Settings.WidgetClickThrough ? "Widget : les clics passent à travers." : "Widget : déplaçable à la souris.");
+    }
+
+    public StoragePage Storage => _storagePage;
+
+    // ───────────────────────────── Navigation ─────────────────────────────
 
     private void Navigation_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not Button { Tag: string destination } button)
+        if (sender is not Button { Uid: { Length: > 0 } destination } button)
         {
             return;
         }
-
-        PageHost.Content = destination switch
+        if (!_pages.TryGetValue(destination, out var page))
         {
-            "Storage" => _storagePage,
-            "Monitoring" => new MonitoringPage(),
-            "Cleaning" => PlaceholderPage.Create("Cleaning", "Le module de nettoyage sera livré après Monitoring.", "Aucune suppression n’est disponible dans ce prototype."),
-            "Optimization" => PlaceholderPage.Create("Optimization", "Optimisation Windows", "La lecture des processus/services et les actions réversibles ne sont pas encore implémentées."),
-            "History" => PlaceholderPage.Create("History", "Historique des analyses", "Le stockage persistant et les exports ne sont pas implémentés dans V0.1."),
-            "Settings" => PlaceholderPage.Create("Settings", "Paramètres", "Les préférences et l’intégration facultative à Explorer ne sont pas implémentées dans V0.1."),
-            _ => _storagePage
-        };
-        UpdateNavigation(button);
-    }
-
-    private void UpdateNavigation(Button selected)
-    {
-        foreach (var button in FindVisualChildren<Button>(this).Where(button => button.Tag is string))
-        {
-            button.Background = button == selected ? System.Windows.Media.Brushes.DarkSlateGray : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(37, 45, 58));
-            button.BorderBrush = button == selected ? (System.Windows.Media.Brush)FindResource("AccentBrush") : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(48, 59, 75));
+            page = destination switch
+            {
+                "Settings" => new SettingsPage(this),
+                "History" => new HistoryPage(),
+                "Monitoring" => _monitoringPage = new Monitoring.MonitoringPage(ToggleWidget),
+                "Cleaning" => new CleaningPage(this),
+                "Optimization" => new OptimizationPage(this),
+                _ => _storagePage
+            };
+            _pages[destination] = page;
         }
+        PageHost.Content = page;
+        Select(button);
     }
 
-    private static IEnumerable<T> FindVisualChildren<T>(DependencyObject parent) where T : DependencyObject
+    private void Select(Button selected)
     {
-        for (var index = 0; index < System.Windows.Media.VisualTreeHelper.GetChildrenCount(parent); index++)
+        foreach (var child in Navigation.Children.OfType<Button>())
         {
-            var child = System.Windows.Media.VisualTreeHelper.GetChild(parent, index);
-            if (child is T typed)
-            {
-                yield return typed;
-            }
-            foreach (var descendant in FindVisualChildren<T>(child))
-            {
-                yield return descendant;
-            }
+            child.Tag = child == selected ? "Selected" : null;
         }
     }
 
     private void SetStatus(string message) => GlobalStatus.Text = message;
 
+    private void UpdateElevationStatus() =>
+        ElevationStatus.Text = _storagePage.HasActiveSession
+            ? "Hors ligne · analyse rapide autorisée pour cette session"
+            : "Hors ligne · analyse rapide non autorisée (analyse standard)";
+
+    // ───────────────────────────── Barre de titre intégrée ─────────────────────────────
+
+    private void Minimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+
+    private void Maximize_Click(object sender, RoutedEventArgs e) =>
+        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+
+    private void Close_Click(object sender, RoutedEventArgs e) => Close();
+
+    private void Window_StateChanged(object? sender, EventArgs e)
+    {
+        var maximized = WindowState == WindowState.Maximized;
+        // Fenêtre agrandie : Windows déborde de l'écran de l'épaisseur du cadre ; on la compense.
+        var frame = SystemParameters.WindowResizeBorderThickness;
+        WindowFrame.Margin = maximized
+            ? new Thickness(frame.Left + 2, frame.Top + 2, frame.Right + 2, frame.Bottom + 2)
+            : new Thickness(0);
+        WindowFrame.BorderThickness = maximized ? new Thickness(0) : new Thickness(1);
+        WindowFrame.BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x30, 0x3B, 0x4B));
+        MaximizeButton.Content = maximized ? "" : "";
+        MaximizeButton.ToolTip = maximized ? "Niveau inférieur" : "Agrandir";
+    }
+
+    // ───────────────────────────── Zone de notification ─────────────────────────────
+
+    private Forms.NotifyIcon CreateTray()
+    {
+        var menu = new Forms.ContextMenuStrip();
+        menu.Items.Add("Ouvrir OPTIVANCE", null, (_, _) => ShowFromTray());
+        menu.Items.Add("Afficher / masquer le widget", null, (_, _) => Dispatcher.BeginInvoke(ToggleWidget));
+        menu.Items.Add(new Forms.ToolStripSeparator());
+        menu.Items.Add("Quitter", null, (_, _) => ExitApplication());
+        var icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath!) ?? System.Drawing.SystemIcons.Application;
+        var tray = new Forms.NotifyIcon { Icon = icon, Text = "OPTIVANCE", ContextMenuStrip = menu, Visible = true };
+        tray.MouseClick += (_, e) =>
+        {
+            if (e.Button == Forms.MouseButtons.Left)
+            {
+                ShowFromTray();
+            }
+        };
+        return tray;
+    }
+
+    public void ShowFromTray()
+    {
+        Show();
+        if (WindowState == WindowState.Minimized)
+        {
+            WindowState = WindowState.Maximized;
+        }
+        Activate();
+        Topmost = true;
+        Topmost = false;
+        Focus();
+    }
+
+    public void ExitApplication()
+    {
+        _exiting = true;
+        Close();
+    }
+
     private async void Window_Closing(object? sender, CancelEventArgs e)
     {
-        if (_allowClose || !_storagePage.IsScanning)
+        if (!_exiting && App.Settings.CloseToTray)
         {
+            // Fermer = masquer : OPTIVANCE reste dans la zone de notification (widget, raccourcis).
+            e.Cancel = true;
+            Hide();
+            if (!_trayHintShown)
+            {
+                _trayHintShown = true;
+                _tray.ShowBalloonTip(3000, "OPTIVANCE reste actif", "OPTIVANCE continue dans la zone de notification. Clic droit sur l’icône → Quitter pour l’arrêter.", Forms.ToolTipIcon.Info);
+            }
             return;
         }
 
-        e.Cancel = true;
-        SetStatus("Annulation de l’analyse avant fermeture…");
-        await _storagePage.CancelAndWaitAsync();
-        _allowClose = true;
-        Close();
+        if (_storagePage.IsScanning)
+        {
+            e.Cancel = true;
+            SetStatus("Annulation de l’analyse avant fermeture…");
+            await _storagePage.CancelAndWaitAsync();
+            _exiting = true;
+            Close();
+            return;
+        }
+
+        _tray.Visible = false;
+        _tray.Dispose();
+        _hotkeys.Dispose();
+        _alerts.Dispose();
+        _widget?.Close();
+        Infrastructure.Monitoring.SystemMonitor.Shared.Dispose();
+        // Fermeture du composant élevé hors du fil d'interface (pas d'interblocage), 3 s au plus.
+        Task.Run(_storagePage.DisposeSessionAsync).Wait(TimeSpan.FromSeconds(3));
+        App.History.Add(HistoryCategory.Application, "Fermeture", "OPTIVANCE", "Application quittée");
+        Application.Current.Shutdown();
     }
 }

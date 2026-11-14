@@ -1,4 +1,4 @@
-//! Protocole Named Pipe v2 partagé par le scan classique et le helper MFT.
+//! Protocole Named Pipe v3 partagé par le scan classique et le helper MFT.
 //!
 //! Code extrait sans changement de comportement de `main.rs` (V0.2). Le format des
 //! messages est figé par les tests ci-dessous : le client WPF (`ScanEngineClient`)
@@ -42,6 +42,8 @@ pub struct Entry {
     pub unique_logical_bytes: u64,
     pub unique_allocated_bytes: u64,
     pub hard_link_duplicate: bool,
+    /// Dernière modification (FILETIME UTC) ; 0 si inconnue.
+    pub modified: u64,
 }
 
 pub struct Counters {
@@ -166,7 +168,7 @@ pub fn send_error_with_code(
 
 pub fn serialize_error(message: &str, code: Option<&str>) -> String {
     let mut json = String::with_capacity(message.len() + 64);
-    json.push_str("{\"v\":2,\"type\":\"error\",\"message\":");
+    json.push_str("{\"v\":3,\"type\":\"error\",\"message\":");
     push_json_string(&mut json, message);
     if let Some(code) = code {
         json.push_str(",\"code\":");
@@ -179,7 +181,7 @@ pub fn serialize_error(message: &str, code: Option<&str>) -> String {
 pub fn send_progress(writer: &mut BufWriter<File>, profile: &mut Profile, counters: &Counters, elapsed_ms: u64) -> std::io::Result<()> {
     let started = Instant::now();
     let json = format!(
-        "{{\"v\":2,\"type\":\"progress\",\"visitedFiles\":{},\"visitedDirectories\":{},\"uniqueLogicalBytes\":{},\"elapsedMs\":{}}}",
+        "{{\"v\":3,\"type\":\"progress\",\"visitedFiles\":{},\"visitedDirectories\":{},\"uniqueLogicalBytes\":{},\"elapsedMs\":{}}}",
         counters.files, counters.directories, counters.unique_logical_bytes, elapsed_ms
     );
     profile.serialization_ns += started.elapsed().as_nanos();
@@ -212,26 +214,22 @@ pub fn send_entries(
     Ok(true)
 }
 
+/// Lot de résultats v3. L'identifiant de chaque entrée est implicite (`start` + position) ;
+/// chaque entrée est une ligne compacte :
+/// `[parentId, childStart, childCount, dossier(0|1), nom, logique, alloué, doublon(0|1), modifié]`.
+/// Pour un dossier, logique/alloué sont les totaux uniques de son sous-arbre.
 pub fn serialize_results(batch: &[Entry], batch_start: usize) -> String {
-    let mut message = String::with_capacity(batch.len() * 112);
-    message.push_str("{\"v\":2,\"type\":\"results\",\"entries\":[");
+    let mut message = String::with_capacity(batch.len() * 64 + 64);
+    let _ = write!(message, "{{\"v\":3,\"type\":\"results\",\"start\":{batch_start},\"entries\":[");
     for (offset, entry) in batch.iter().enumerate() {
         if offset != 0 {
             message.push(',');
         }
-        message.push_str("{\"id\":");
-        let _ = write!(message, "{},\"parentId\":{},\"childStart\":{},\"childCount\":{},\"kind\":\"{}\",\"name\":", batch_start + offset, entry.parent_id, entry.child_start, entry.child_count, if entry.is_directory { "directory" } else { "file" });
+        let _ = write!(message, "[{},{},{},{},", entry.parent_id, entry.child_start, entry.child_count, u8::from(entry.is_directory));
         push_json_string(&mut message, &entry.name);
-        message.push_str(",\"logicalBytes\":");
         let logical = if entry.is_directory { entry.unique_logical_bytes } else { entry.logical_bytes };
         let allocated = if entry.is_directory { entry.unique_allocated_bytes } else { entry.allocated_bytes };
-        let _ = write!(
-            message,
-            "{},\"allocatedBytes\":{},\"hardLinkDuplicate\":{}}}",
-            logical,
-            allocated,
-            if entry.hard_link_duplicate { "true" } else { "false" }
-        );
+        let _ = write!(message, ",{logical},{allocated},{},{}]", u8::from(entry.hard_link_duplicate), entry.modified);
     }
     message.push_str("]}");
     message
@@ -250,7 +248,7 @@ pub fn warn(
     }
     let started = Instant::now();
     let mut json = String::with_capacity(path.as_os_str().len() + message.len() + 96);
-    json.push_str("{\"v\":2,\"type\":\"warning\",\"path\":");
+    json.push_str("{\"v\":3,\"type\":\"warning\",\"path\":");
     push_json_string(&mut json, &path.to_string_lossy());
     json.push_str(",\"message\":");
     push_json_string(&mut json, message);
@@ -262,7 +260,7 @@ pub fn warn(
 /// `extra_fields` est inséré tel quel après les totaux (ex. `,"method":"mft"`) ; vide pour le scan classique.
 pub fn serialize_summary(state: &str, counters: &Counters, root: &Entry, profile: &Profile, total_ms: f64, extra_fields: &str) -> String {
     format!(
-        "{{\"v\":2,\"type\":\"{state}\",\"files\":{},\"directories\":{},\"warnings\":{},\"uniqueLogicalBytes\":{},\"uniqueAllocatedBytes\":{}{extra_fields},\"profile\":{{\"totalMs\":{total_ms:.3},\"enumerationMs\":{:.3},\"sortingMs\":{:.3},\"metadataMs\":{:.3},\"fileInformationMs\":{:.3},\"aggregationMs\":{:.3},\"serializationMs\":{:.3},\"pipeWriteMs\":{:.3},\"metadataLookups\":{},\"fileInformationLookups\":{},\"entriesSent\":{},\"resultBatches\":{},\"bytesSent\":{}}}}}",
+        "{{\"v\":3,\"type\":\"{state}\",\"files\":{},\"directories\":{},\"warnings\":{},\"uniqueLogicalBytes\":{},\"uniqueAllocatedBytes\":{}{extra_fields},\"profile\":{{\"totalMs\":{total_ms:.3},\"enumerationMs\":{:.3},\"sortingMs\":{:.3},\"metadataMs\":{:.3},\"fileInformationMs\":{:.3},\"aggregationMs\":{:.3},\"serializationMs\":{:.3},\"pipeWriteMs\":{:.3},\"metadataLookups\":{},\"fileInformationLookups\":{},\"entriesSent\":{},\"resultBatches\":{},\"bytesSent\":{}}}}}",
         counters.files,
         counters.directories,
         counters.warnings,
@@ -321,6 +319,7 @@ mod tests {
             unique_logical_bytes: if duplicate { 0 } else { logical },
             unique_allocated_bytes: if duplicate { 0 } else { allocated },
             hard_link_duplicate: duplicate,
+            modified: 0,
         }
     }
 
@@ -332,30 +331,33 @@ mod tests {
     }
 
     #[test]
-    fn results_batch_keeps_v2_wire_format() {
+    fn results_batch_uses_compact_v3_rows() {
         let mut root = entry("R", -1, true, 0, 0, false);
         root.child_start = 1;
         root.child_count = 1;
         root.unique_logical_bytes = 10;
         root.unique_allocated_bytes = 4096;
-        let batch = [root, entry("a\"b", 0, false, 10, 4096, true)];
+        let mut file = entry("a\"b", 0, false, 10, 4096, true);
+        file.modified = 133_456_789_012_345_678;
+        let batch = [root, file];
+        // [parentId, childStart, childCount, dossier, nom, logique, alloué, doublon, modifié(FILETIME)]
         assert_eq!(
             serialize_results(&batch, 7),
-            "{\"v\":2,\"type\":\"results\",\"entries\":[\
-             {\"id\":7,\"parentId\":-1,\"childStart\":1,\"childCount\":1,\"kind\":\"directory\",\"name\":\"R\",\"logicalBytes\":10,\"allocatedBytes\":4096,\"hardLinkDuplicate\":false},\
-             {\"id\":8,\"parentId\":0,\"childStart\":0,\"childCount\":0,\"kind\":\"file\",\"name\":\"a\\\"b\",\"logicalBytes\":10,\"allocatedBytes\":4096,\"hardLinkDuplicate\":true}]}"
+            "{\"v\":3,\"type\":\"results\",\"start\":7,\"entries\":[\
+             [-1,1,1,1,\"R\",10,4096,0,0],\
+             [0,0,0,0,\"a\\\"b\",10,4096,1,133456789012345678]]}"
         );
     }
 
     #[test]
-    fn summary_keeps_v2_wire_format_and_inserts_extra_fields() {
+    fn summary_keeps_wire_format_and_inserts_extra_fields() {
         let counters = Counters { files: 2, directories: 1, warnings: 0, unique_logical_bytes: 5 };
         let mut root = entry("R", -1, true, 0, 0, false);
         root.unique_logical_bytes = 5;
         root.unique_allocated_bytes = 8;
         let profile = Profile { entries_sent: 3, result_batches: 1, bytes_sent: 99, ..Profile::default() };
         let expected_tail = ",\"profile\":{\"totalMs\":1.500,\"enumerationMs\":0.000,\"sortingMs\":0.000,\"metadataMs\":0.000,\"fileInformationMs\":0.000,\"aggregationMs\":0.000,\"serializationMs\":0.000,\"pipeWriteMs\":0.000,\"metadataLookups\":0,\"fileInformationLookups\":0,\"entriesSent\":3,\"resultBatches\":1,\"bytesSent\":99}}";
-        let head = "{\"v\":2,\"type\":\"completed\",\"files\":2,\"directories\":1,\"warnings\":0,\"uniqueLogicalBytes\":5,\"uniqueAllocatedBytes\":8";
+        let head = "{\"v\":3,\"type\":\"completed\",\"files\":2,\"directories\":1,\"warnings\":0,\"uniqueLogicalBytes\":5,\"uniqueAllocatedBytes\":8";
         assert_eq!(serialize_summary("completed", &counters, &root, &profile, 1.5, ""), format!("{head}{expected_tail}"));
         assert_eq!(
             serialize_summary("completed", &counters, &root, &profile, 1.5, ",\"method\":\"mft\""),
@@ -365,8 +367,8 @@ mod tests {
 
     #[test]
     fn error_carries_optional_machine_code() {
-        assert_eq!(serialize_error("x", None), "{\"v\":2,\"type\":\"error\",\"message\":\"x\"}");
-        assert_eq!(serialize_error("x", Some("not-ntfs")), "{\"v\":2,\"type\":\"error\",\"message\":\"x\",\"code\":\"not-ntfs\"}");
+        assert_eq!(serialize_error("x", None), "{\"v\":3,\"type\":\"error\",\"message\":\"x\"}");
+        assert_eq!(serialize_error("x", Some("not-ntfs")), "{\"v\":3,\"type\":\"error\",\"message\":\"x\",\"code\":\"not-ntfs\"}");
     }
 
     #[test]
