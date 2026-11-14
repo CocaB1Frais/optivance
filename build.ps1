@@ -72,7 +72,10 @@ if (-not $Package -and (Test-Path $dist)) { Remove-Item $dist -Recurse -Force }
 
 # Dossier minimal : fichiers de compilation supprimés (recréés à la prochaine construction, ~2 min).
 if ($Clean) {
-    Get-ChildItem $source -Directory -Recurse -Force | Where-Object { $_.Name -in 'bin', 'obj' } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    # Seulement bin/obj des projets .NET (jamais engine\src\bin, qui contient du code source Rust).
+    Get-ChildItem $source -Filter *.csproj -Recurse | ForEach-Object {
+        foreach ($output in 'bin', 'obj') { Remove-Item (Join-Path $_.DirectoryName $output) -Recurse -Force -ErrorAction SilentlyContinue }
+    }
     Remove-Item (Join-Path $source 'engine\target') -Recurse -Force -ErrorAction SilentlyContinue
     Write-Host 'Fichiers de compilation supprimés.' -ForegroundColor Green
 }
