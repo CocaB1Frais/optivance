@@ -600,7 +600,10 @@ mod tests {
         let relative = original.to_string_lossy()[2..].to_owned();
         let mut names: Vec<String> = hard_link_names(temp_letter(), &relative).unwrap().into_iter().map(|n| n.to_lowercase()).collect();
         names.sort();
-        let directory = fixture.0.to_string_lossy()[2..].to_lowercase();
+        // Windows renvoie les noms longs : le dossier temporaire peut être en nom court (ex. RUNNER~1).
+        let long = fs::canonicalize(&fixture.0).unwrap();
+        let long = long.to_string_lossy();
+        let directory = long.trim_start_matches(r"\\?\")[2..].to_lowercase();
         assert_eq!(names, [format!("{directory}\\original.bin"), format!("{directory}\\sous\\alias.bin")]);
     }
 
