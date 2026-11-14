@@ -11,7 +11,7 @@ public sealed class ScanEngineClient
         IProgress<ScanUpdate>? progress,
         CancellationToken cancellationToken)
     {
-        var workerPath = Path.Combine(MftScanClient.EngineFolder, "optivance-engine.exe");
+        var workerPath = EngineFiles.Prepare(EngineFiles.EngineName);
         if (!File.Exists(workerPath))
         {
             throw new FileNotFoundException("Le moteur Rust est absent du dossier de l’application.", workerPath);

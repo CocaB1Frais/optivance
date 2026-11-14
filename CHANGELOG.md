@@ -1,5 +1,12 @@
 ﻿# Journal des versions
 
+## 1.1.0 — 2026-11-14
+
+- **FPS en jeu** pour tous les jeux (DirectX, OpenGL, Vulkan — vérifié sur Spider-Man 2 et Minecraft), lus dans les événements de Windows, sans injection ; coût mesuré inférieur à 0,01 % du processeur.
+- **Widget automatique** : apparaît quand un jeu plein écran ou sans bordure est au premier plan, disparaît en le quittant ; reste au-dessus du jeu ; conseil « sans bordure » en plein écran exclusif.
+- **Un seul fichier** : `OPTIVANCE.exe` contient le moteur (extrait et vérifié par empreinte SHA-256 au premier lancement).
+- Page de présentation GitHub ; `OPTIVANCE.exe` téléchargeable directement et présent à la racine du dépôt.
+
 ## 1.0.3 — 2026-11-14
 
 - **Désinstallation** en un clic : `Desinstaller OPTIVANCE.cmd` dans le dossier, ou Paramètres › Désinstallation (réglages restaurés, application et données supprimées, aucun autre fichier touché).

@@ -9,12 +9,5 @@
   <ItemGroup>
     <ProjectReference Include="..\..\Optivance.Core\Optivance.Core.csproj" />
     <ProjectReference Include="..\..\Optivance.Infrastructure\Optivance.Infrastructure.csproj" />
-    <!-- Même binaire que l'application (cible explicite + CRT statique, voir Optivance.Desktop.csproj). -->
-    <None Include="..\..\engine\target\engine-v0-2\x86_64-pc-windows-msvc\release\optivance-engine.exe"
-          Link="moteur\optivance-engine.exe"
-          CopyToOutputDirectory="PreserveNewest" />
-    <None Include="..\..\engine\target\engine-v0-2\x86_64-pc-windows-msvc\release\optivance-mft-helper.exe"
-          Link="moteur\optivance-mft-helper.exe"
-          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

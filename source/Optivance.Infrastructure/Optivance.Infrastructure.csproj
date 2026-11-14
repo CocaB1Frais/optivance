@@ -7,4 +7,30 @@
   <ItemGroup>
     <ProjectReference Include="..\Optivance.Core\Optivance.Core.csproj" />
   </ItemGroup>
+
+  <!-- Moteur Rust, intégré à l'assembly (OPTIVANCE.exe autonome, un seul fichier) puis extrait et
+       vérifié par EngineFiles. Cargo lit engine/.cargo/config.toml depuis son répertoire courant :
+       il est lancé depuis engine/ (cible x86_64-pc-windows-msvc, CRT statique, aucune dépendance VCRUNTIME140). -->
+  <PropertyGroup>
+    <OptivanceEngineDir>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\engine'))</OptivanceEngineDir>
+    <OptivanceCargoTargetDir>$(OptivanceEngineDir)\target\engine-v0-2</OptivanceCargoTargetDir>
+    <OptivanceEngineExe>$(OptivanceCargoTargetDir)\x86_64-pc-windows-msvc\release\optivance-engine.exe</OptivanceEngineExe>
+    <OptivanceMftHelperExe>$(OptivanceCargoTargetDir)\x86_64-pc-windows-msvc\release\optivance-mft-helper.exe</OptivanceMftHelperExe>
+  </PropertyGroup>
+  <!-- cargo n'est pas forcément dans le PATH (installation rustup par défaut). Surcharge : /p:CargoExe=... -->
+  <PropertyGroup Condition="'$(CargoExe)' == ''">
+    <CargoExe Condition="'$(CARGO_HOME)' != '' and Exists('$(CARGO_HOME)\bin\cargo.exe')">$(CARGO_HOME)\bin\cargo.exe</CargoExe>
+    <CargoExe Condition="'$(CargoExe)' == '' and Exists('$(USERPROFILE)\.cargo\bin\cargo.exe')">$(USERPROFILE)\.cargo\bin\cargo.exe</CargoExe>
+    <CargoExe Condition="'$(CargoExe)' == ''">cargo</CargoExe>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="$(OptivanceEngineExe)" LogicalName="engine/optivance-engine.exe" />
+    <EmbeddedResource Include="$(OptivanceMftHelperExe)" LogicalName="engine/optivance-mft-helper.exe" />
+  </ItemGroup>
+  <Target Name="BuildOptivanceRustEngine" BeforeTargets="PrepareForBuild">
+    <Exec Command="&quot;$(CargoExe)&quot; build --release --locked --manifest-path &quot;$(OptivanceEngineDir)\Cargo.toml&quot; --target-dir &quot;$(OptivanceCargoTargetDir)&quot;"
+          WorkingDirectory="$(OptivanceEngineDir)" />
+    <Error Condition="!Exists('$(OptivanceEngineExe)')" Text="Moteur Rust introuvable après cargo build : $(OptivanceEngineExe)." />
+    <Error Condition="!Exists('$(OptivanceMftHelperExe)')" Text="Composant administrateur introuvable après cargo build : $(OptivanceMftHelperExe)." />
+  </Target>
 </Project>

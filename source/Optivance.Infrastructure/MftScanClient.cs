@@ -17,10 +17,10 @@ public sealed class MftScanClient
     public const string HelperFileName = "optivance-mft-helper.exe";
     private const int ErrorCancelled = 1223;
 
-    public static string HelperPath => Path.Combine(EngineFolder, HelperFileName);
+    public static string HelperPath => EngineFiles.Prepare(HelperFileName);
 
-    /// <summary>Sous-dossier des exécutables du moteur, à côté d'OPTIVANCE.exe (seul fichier visible à la racine).</summary>
-    public static string EngineFolder => Path.Combine(AppContext.BaseDirectory, "moteur");
+    /// <summary>Dossier des exécutables du moteur (extraits d'OPTIVANCE.exe et vérifiés).</summary>
+    public static string EngineFolder => EngineFiles.Folder;
 
     public static bool IsHelperPresent => File.Exists(HelperPath);
 
